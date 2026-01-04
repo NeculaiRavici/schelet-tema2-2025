@@ -1,28 +1,57 @@
 package main.model;
 
-
 import com.fasterxml.jackson.databind.JsonNode;
 
-import lombok.Getter;
-import lombok.Setter;
+import java.util.ArrayList;
+import java.util.List;
 
-@Getter
-@Setter
 public class User {
-    @Getter
     private final String username;
-    @Getter
     private final String email;
-    @Getter
     private final Role role;
+
     public User(final String username, final String email, final Role role) {
         this.username = username;
         this.email = email;
         this.role = role;
     }
-    public static User fromJSON(final JsonNode userNode) {
-        String username = userNode.get("username").asText();
-        String email = userNode.get("email").asText();
-        return new User(username, email, Role.valueOf(userNode.get("role").asText()));
+
+    public String getUsername() {
+        return username;
     }
+
+    public Role getRole() {
+        return role;
+    }
+
+    public static User fromJson(final com.fasterxml.jackson.databind.JsonNode node) {
+        String username = node.get("username").asText();
+        String email = node.get("email").asText();
+        Role role = Role.valueOf(node.get("role").asText());
+
+        if (role == Role.MANAGER) {
+            java.util.List<String> subs = new java.util.ArrayList<>();
+            com.fasterxml.jackson.databind.JsonNode arr = node.get("subordinates");
+            if (arr != null && arr.isArray()) {
+                for (com.fasterxml.jackson.databind.JsonNode s : arr) {
+                    subs.add(s.asText());
+                }
+            }
+            return new Manager(username, email, subs);
+        }
+
+        if (role == Role.DEVELOPER) {
+            // robust field names
+            String expStr = node.has("expertiseArea") ? node.get("expertiseArea").asText() : "FULLSTACK";
+            String senStr = node.has("seniorityLevel") ? node.get("seniorityLevel").asText()
+                    : (node.has("seniority") ? node.get("seniority").asText() : "MID");
+
+            ExpertiseArea exp = ExpertiseArea.valueOf(expStr);
+            SeniorityLevel sen = SeniorityLevel.valueOf(senStr);
+            return new Developer(username, email, exp, sen);
+        }
+
+        return new User(username, email, role);
+    }
+
 }

@@ -1,25 +1,37 @@
 package main.core;
 
+import main.model.Milestone;
 import main.model.Ticket;
 import main.model.User;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.time.LocalDate;
+import java.time.temporal.ChronoUnit;
+import java.util.*;
 
 public class SystemState {
     private static final SystemState INSTANCE = new SystemState();
-    public final Map<String, User> users=new HashMap<>();
-    public final List<Ticket> tickets=new ArrayList<>();
-    public  int nextTicketId=0;
-    public boolean testingPhase=true;
-    public boolean stopped=false;
+
+    public final Map<String, User> users = new HashMap<>();
+    public final List<Ticket> tickets = new ArrayList<>();
+
+    // --- Milestones ---
+    private final Map<String, Milestone> milestonesByName = new HashMap<>();
+    private final Map<Integer, String> ticketToMilestone = new HashMap<>();
+
+    public int nextTicketId = 0;
+    public boolean stopped = false;
+
+    // --- Testing phase tracking (12 days) ---
+    private static final int TESTING_DAYS = 12;
+    private LocalDate testingStartDate = null;
+
     private SystemState() {
     }
+
     public static SystemState getInstance() {
         return INSTANCE;
     }
+
     public void addUser(final User user) {
         users.put(user.getUsername(), user);
     }
@@ -38,12 +50,17 @@ public class SystemState {
         return id;
     }
 
-    public boolean isTestingPhase() {
-        return testingPhase;
+    public boolean isTestingPhase(final String timestamp) {
+        LocalDate current = LocalDate.parse(timestamp);
+        if (testingStartDate == null) {
+            testingStartDate = current;
+        }
+        long days = ChronoUnit.DAYS.between(testingStartDate, current);
+        return days < TESTING_DAYS;
     }
 
-    public void setTestingPhase(final boolean testingPhase) {
-        this.testingPhase = testingPhase;
+    public void startTestingPhaseFrom(final String timestamp) {
+        testingStartDate = LocalDate.parse(timestamp);
     }
 
     public boolean isStopped() {
@@ -62,4 +79,38 @@ public class SystemState {
         }
         return null;
     }
+
+    // --- Milestone storage helpers ---
+    public void addMilestone(final Milestone m) {
+        milestonesByName.put(m.getName(), m);
+    }
+
+    public Milestone getMilestone(final String name) {
+        return milestonesByName.get(name);
+    }
+
+    public Collection<Milestone> getAllMilestones() {
+        return milestonesByName.values();
+    }
+
+    public String getMilestoneNameForTicket(final int ticketId) {
+        return ticketToMilestone.get(ticketId);
+    }
+
+    public void linkTicketToMilestone(final int ticketId, final String milestoneName) {
+        ticketToMilestone.put(ticketId, milestoneName);
+    }
+    public void reset() {
+        users.clear();
+        tickets.clear();
+
+        milestonesByName.clear();
+         ticketToMilestone.clear();
+
+        nextTicketId = 0;
+        stopped = false;
+
+         testingStartDate = null;
+    }
+
 }

@@ -1,15 +1,16 @@
 package main.core;
 
-
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import main.model.Milestone;
 import main.model.Ticket;
 
 import java.util.List;
 
-public class OutputBuilder {
+public final class OutputBuilder {
     private static final ObjectMapper MAPPER = new ObjectMapper();
+
     private final ObjectNode root;
 
     private OutputBuilder(final String command, final String username, final String timestamp) {
@@ -29,9 +30,17 @@ public class OutputBuilder {
     }
 
     public OutputBuilder tickets(final List<Ticket> tickets) {
-        ArrayNode tArr = root.putArray("tickets");
+        ArrayNode arr = root.putArray("tickets");
         for (Ticket t : tickets) {
-            tArr.add(t.toOutputJson());
+            arr.add(t.toOutputJson());
+        }
+        return this;
+    }
+
+    public OutputBuilder milestones(final List<ObjectNode> milestoneNodes) {
+        ArrayNode arr = root.putArray("milestones");
+        for (ObjectNode n : milestoneNodes) {
+            arr.add(n);
         }
         return this;
     }
@@ -39,4 +48,12 @@ public class OutputBuilder {
     public ObjectNode build() {
         return root;
     }
+    public OutputBuilder assignedTickets(final List<Ticket> tickets) {
+        ArrayNode arr = root.putArray("assignedTickets");
+        for (Ticket t : tickets) {
+            arr.add(t.toAssignedTicketJson());
+        }
+        return this;
+    }
+
 }

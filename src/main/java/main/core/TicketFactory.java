@@ -14,13 +14,11 @@ public final class TicketFactory {
         TicketType type = TicketType.valueOf(params.get("type").asText());
         String title = params.get("title").asText();
         BusinessPriority priority = BusinessPriority.valueOf(params.get("businessPriority").asText());
-        String reportedBy = params.get("reportedBy").asText(); // can be ""
-        // Note: username != reportedBy is allowed; reportedBy is kept as given.
+        String reportedBy = params.get("reportedBy").asText();
 
-        // Anonymous rule (from spec + ref test):
+        // Anonymous rule (as in Test 1)
         if (reportedBy.isEmpty()) {
             if (type != TicketType.BUG) {
-                // caller handles error; but keep consistent:
                 return null;
             }
             priority = BusinessPriority.LOW;
@@ -30,6 +28,17 @@ public final class TicketFactory {
         t.setStatus(TicketStatus.OPEN);
         t.setCreatedAt(createdAt);
         t.setReportedBy(reportedBy);
+
+        // --- Added: store BUG severity for Test 3 escalation ---
+        JsonNode sev = params.get("severity");
+        if (sev != null && sev.isTextual()) {
+            t.setSeverity(sev.asText());
+        }
+        com.fasterxml.jackson.databind.JsonNode exp = params.get("expertiseArea");
+        if (exp != null && exp.isTextual()) {
+            t.setExpertiseArea(exp.asText());
+        }
+
         return t;
     }
 }

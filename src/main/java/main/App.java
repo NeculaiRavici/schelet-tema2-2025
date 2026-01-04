@@ -37,13 +37,14 @@ public class App {
      * @param outputPath path to the file where results should be written
      */
     public static void run(final String inputPath, final String outputPath) {
+        SystemState.getInstance().reset();
         List<ObjectNode> outputs = new ArrayList<>();
 
         // 1) Load users
         try {
             ArrayNode usersArray = (ArrayNode) MAPPER.readTree(new File(INPUT_USERS_FIELD));
             for (JsonNode userNode : usersArray) {
-                User u = User.fromJSON(userNode);
+                User u = User.fromJson(userNode);
                 SystemState.getInstance().addUser(u);
             }
         } catch (IOException e) {
