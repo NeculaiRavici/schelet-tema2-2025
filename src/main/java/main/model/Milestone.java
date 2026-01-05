@@ -95,15 +95,14 @@ public final class Milestone {
         return (int) diff + 1;
     }
 
-    private int overdueBy(final LocalDate now) {
-        LocalDate due = LocalDate.parse(dueDate);
+    private int overdueBy(final java.time.LocalDate now, final boolean isCompleted) {
+        java.time.LocalDate due = java.time.LocalDate.parse(dueDate);
         if (!now.isAfter(due)) {
             return 0;
         }
-        long diff = ChronoUnit.DAYS.between(due, now);
-        return (int) diff + 1; // inclusive, matches ref_03
+        long diff = java.time.temporal.ChronoUnit.DAYS.between(due, now);
+        return isCompleted ? (int) diff : (int) diff + 1;
     }
-
 
     private List<Integer> openTickets(final SystemState state) {
         List<Integer> out = new ArrayList<>();
@@ -126,13 +125,11 @@ public final class Milestone {
         }
         return out;
     }
-
     private double completionPercentage(final SystemState state) {
-        if (tickets.isEmpty()) {
-            return 0.0;
-        }
+        if (tickets.isEmpty()) return 0.0;
         int closed = closedTickets(state).size();
-        return (closed * 100.0) / tickets.size();
+        double frac = closed / (double) tickets.size(); // fraction, not percent
+        return Math.round(frac * 100.0) / 100.0;        // 2 decimals
     }
 
     public ObjectNode toOutputJson(final SystemState state, final String timestamp) {
@@ -163,13 +160,18 @@ public final class Milestone {
 
         n.put("createdBy", createdBy);
 
-        String status = isActive(state) ? "ACTIVE" : "INACTIVE";
+        boolean activeNow = isActive(state);
+        boolean completed = !activeNow;
+
+        String status = completed ? "COMPLETED" : "ACTIVE";
         n.put("status", status);
+
+
 
         n.put("isBlocked", isBlocked(state));
 
         n.put("daysUntilDue", daysUntilDue(now));
-        n.put("overdueBy", overdueBy(now));
+        n.put("overdueBy", overdueBy(now, completed));
 
         List<Integer> open = openTickets(state);
         List<Integer> closed = closedTickets(state);

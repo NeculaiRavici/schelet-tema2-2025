@@ -28,7 +28,7 @@ public class User {
         String username = node.get("username").asText();
         String email = node.get("email").asText();
         Role role = Role.valueOf(node.get("role").asText());
-
+        String hireDate = node.has("hireDate") ? node.get("hireDate").asText() : "";
         if (role == Role.MANAGER) {
             java.util.List<String> subs = new java.util.ArrayList<>();
             com.fasterxml.jackson.databind.JsonNode arr = node.get("subordinates");
@@ -48,7 +48,7 @@ public class User {
 
             ExpertiseArea exp = ExpertiseArea.valueOf(expStr);
             SeniorityLevel sen = SeniorityLevel.valueOf(senStr);
-            return new Developer(username, email, exp, sen);
+            return new Developer(username, email, exp, sen,hireDate);
         }
 
         return new User(username, email, role);

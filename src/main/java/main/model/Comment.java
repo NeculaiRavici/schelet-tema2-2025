@@ -2,12 +2,16 @@ package main.model;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import lombok.Getter;
 
 public class Comment {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
+    @Getter
     private final String author;
+    @Getter
     private final String content;
+    @Getter
     private final String createdAt;
 
     public Comment(final String author, final String content, final String createdAt) {
@@ -23,4 +27,5 @@ public class Comment {
         n.put("createdAt", createdAt);
         return n;
     }
+
 }

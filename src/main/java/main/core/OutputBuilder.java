@@ -55,5 +55,14 @@ public final class OutputBuilder {
         }
         return this;
     }
+    public OutputBuilder putString(final String key, final String value) {
+        root.put(key, value);
+        return this;
+    }
+
+    public OutputBuilder resultsEmpty() {
+        root.putArray("results");
+        return this;
+    }
 
 }

@@ -16,12 +16,13 @@ public final class Ticket {
     private final TicketType type;
     private final String title;
     private final List<Comment> comments = new ArrayList<>();
-
+    private final List<TicketAction> actions = new ArrayList<>();
     private BusinessPriority businessPriority;
     private TicketStatus status;
 
     private String createdAt = "";
-    @Getter @Setter
+    @Getter
+    @Setter
     private String assignedAt = "";
     private String solvedAt = "";
     private String assignedTo = "";
@@ -29,7 +30,8 @@ public final class Ticket {
 
     // --- Added for Test 3 priority escalation ---
     private String severity = "";
-    @Getter @Setter
+    @Getter
+    @Setter
     private String expertiseArea = "";
 
     public Ticket(final int id, final TicketType type, final String title,
@@ -40,33 +42,88 @@ public final class Ticket {
         this.businessPriority = businessPriority;
     }
 
-    public int getId() { return id; }
+    public int getId() {
+        return id;
+    }
 
-    public TicketType getType() { return type; }
+    public TicketType getType() {
+        return type;
+    }
 
-    public TicketStatus getStatus() { return status; }
+    public TicketStatus getStatus() {
+        return status;
+    }
 
-    public String getCreatedAt() { return createdAt; }
+    public String getCreatedAt() {
+        return createdAt;
+    }
 
-    public String getReportedBy() { return reportedBy; }
+    public String getReportedBy() {
+        return reportedBy;
+    }
 
-    public String getAssignedTo() { return assignedTo; }
+    public String getAssignedTo() {
+        return assignedTo;
+    }
 
-    public BusinessPriority getBusinessPriority() { return businessPriority; }
+    public BusinessPriority getBusinessPriority() {
+        return businessPriority;
+    }
 
-    public void setBusinessPriority(final BusinessPriority bp) { this.businessPriority = bp; }
+    public void setBusinessPriority(final BusinessPriority bp) {
+        this.businessPriority = bp;
+    }
 
-    public String getSeverity() { return severity; }
+    public String getSeverity() {
+        return severity;
+    }
 
-    public void setSeverity(final String severity) { this.severity = severity; }
+    public void setSeverity(final String severity) {
+        this.severity = severity;
+    }
 
-    public void setReportedBy(final String reportedBy) { this.reportedBy = reportedBy; }
+    public void setReportedBy(final String reportedBy) {
+        this.reportedBy = reportedBy;
+    }
 
-    public void setCreatedAt(final String createdAt) { this.createdAt = createdAt; }
+    public void setCreatedAt(final String createdAt) {
+        this.createdAt = createdAt;
+    }
 
-    public void setStatus(final TicketStatus status) { this.status = status; }
+    public void setStatus(final TicketStatus status) {
+        this.status = status;
+    }
 
-    public void setAssignedTo(final String assignedTo) { this.assignedTo = assignedTo; }
+    public void setAssignedTo(final String assignedTo) {
+        this.assignedTo = assignedTo;
+    }
+
+    public List<Comment> getComments() {
+        return comments;
+    }
+
+    public void addComment(final Comment c) {
+        comments.add(c);
+    }
+
+
+    public void addAction(final TicketAction a) {
+        actions.add(a);
+    }
+
+    public List<TicketAction> getActions() {
+        return actions;
+    }
+    // stack of previous statuses for undo
+    private final java.util.Deque<TicketStatus> statusHistory = new java.util.ArrayDeque<>();
+
+    public void pushStatusHistory(final TicketStatus prev) {
+        statusHistory.push(prev);
+    }
+
+    public TicketStatus popStatusHistory() {
+        return statusHistory.isEmpty() ? null : statusHistory.pop();
+    }
 
     public ObjectNode toOutputJson() {
         ObjectNode n = MAPPER.createObjectNode();
@@ -88,6 +145,7 @@ public final class Ticket {
         }
         return n;
     }
+
     public ObjectNode toAssignedTicketJson() {
         ObjectNode n = MAPPER.createObjectNode();
         n.put("id", id);
@@ -104,6 +162,49 @@ public final class Ticket {
             cArr.add(c.toJson());
         }
         return n;
+    }
+
+    public boolean undoLastCommentBy(final String author) {
+        for (int i = comments.size() - 1; i >= 0; i--) {
+            if (author.equals(comments.get(i).getAuthor())) {
+                comments.remove(i);
+                return true;
+            }
+        }
+        return false;
+    }
+    public ObjectNode toHistoryJson() {
+        ObjectNode n = MAPPER.createObjectNode();
+        n.put("id", id);
+        n.put("title", title);
+        n.put("status", status.name());
+
+        ArrayNode aArr = n.putArray("actions");
+        for (TicketAction a : actions) {
+            aArr.add(a.toJson());
+        }
+
+        ArrayNode cArr = n.putArray("comments");
+        for (Comment c : comments) {
+            cArr.add(c.toJson());
+        }
+
+        return n;
+    }
+    private java.util.List<String> tempMatchingWords = java.util.Collections.emptyList();
+
+    public String getTitle() { return title; } // ensure exists
+
+    public void setTempMatchingWords(final java.util.List<String> words) {
+        this.tempMatchingWords = (words == null) ? java.util.Collections.emptyList() : new java.util.ArrayList<>(words);
+    }
+
+    public java.util.List<String> getTempMatchingWords() {
+        return tempMatchingWords;
+    }
+
+    public void clearTempMatchingWords() {
+        this.tempMatchingWords = java.util.Collections.emptyList();
     }
 
 }
