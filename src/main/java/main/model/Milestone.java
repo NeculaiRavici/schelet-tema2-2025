@@ -18,6 +18,8 @@ public final class Milestone {
     private final List<String> blockingFor;
     private final String dueDate;   // "YYYY-MM-DD"
     private final String createdAt; // timestamp of createMilestone
+    // Completion date (YYYY-MM-DD) captured when the milestone becomes COMPLETED
+    private String completedAt = "";
     private final List<Integer> tickets;
     private final List<String> assignedDevs;
     private final String createdBy;
@@ -48,6 +50,10 @@ public final class Milestone {
 
     public String getCreatedBy() {
         return createdBy;
+    }
+
+    public List<String> getBlockingFor() {
+        return Collections.unmodifiableList(blockingFor);
     }
 
     public List<String> getAssignedDevs() {
@@ -84,24 +90,38 @@ public final class Milestone {
         return false;
     }
 
-    private int daysUntilDue(final LocalDate now) {
-        LocalDate due = LocalDate.parse(dueDate);
-        if (due.isBefore(now)) {
-            return 0;
+    /**
+     * Captures completion date when milestone becomes completed.
+     * Call this right after a ticket transitions to CLOSED.
+     */
+    public void markCompletedIfEligible(final SystemState state, final String nowIso) {
+        if (!completedAt.isEmpty()) {
+            return;
         }
-        // Inclusive-style counting to match ref:
-        // 2025-10-21 -> 2025-10-28 should produce 8, not 7
-        long diff = ChronoUnit.DAYS.between(now, due);
+        if (!isActive(state)) {
+            completedAt = nowIso;
+        }
+    }
+
+    private static int inclusiveDaysBetween(final LocalDate from, final LocalDate to) {
+        long diff = ChronoUnit.DAYS.between(from, to);
         return (int) diff + 1;
     }
 
-    private int overdueBy(final java.time.LocalDate now, final boolean isCompleted) {
-        java.time.LocalDate due = java.time.LocalDate.parse(dueDate);
-        if (!now.isAfter(due)) {
+    private int daysUntilDue(final LocalDate referenceDate) {
+        LocalDate due = LocalDate.parse(dueDate);
+        if (referenceDate.isAfter(due)) {
             return 0;
         }
-        long diff = java.time.temporal.ChronoUnit.DAYS.between(due, now);
-        return isCompleted ? (int) diff : (int) diff + 1;
+        return inclusiveDaysBetween(referenceDate, due);
+    }
+
+    private int overdueBy(final LocalDate referenceDate) {
+        LocalDate due = LocalDate.parse(dueDate);
+        if (!referenceDate.isAfter(due)) {
+            return 0;
+        }
+        return inclusiveDaysBetween(due, referenceDate);
     }
 
     private List<Integer> openTickets(final SystemState state) {
@@ -112,6 +132,7 @@ public final class Milestone {
                 out.add(id);
             }
         }
+        Collections.sort(out);
         return out;
     }
 
@@ -123,6 +144,7 @@ public final class Milestone {
                 out.add(id);
             }
         }
+        Collections.sort(out);
         return out;
     }
     private double completionPercentage(final SystemState state) {
@@ -168,12 +190,19 @@ public final class Milestone {
         String status = completed ? "COMPLETED" : "ACTIVE";
         n.put("status", status);
 
-
-
         n.put("isBlocked", isBlocked(state));
 
-        n.put("daysUntilDue", daysUntilDue(now));
-        n.put("overdueBy", overdueBy(now, completed));
+        LocalDate referenceDate = now;
+        if (completed) {
+            if (completedAt.isEmpty()) {
+                // Fallback: if somehow not captured earlier, treat the view time as completion time
+                completedAt = timestamp;
+            }
+            referenceDate = LocalDate.parse(completedAt);
+        }
+
+        n.put("daysUntilDue", daysUntilDue(referenceDate));
+        n.put("overdueBy", overdueBy(referenceDate));
 
         List<Integer> open = openTickets(state);
         List<Integer> closed = closedTickets(state);
@@ -190,18 +219,46 @@ public final class Milestone {
 
         n.put("completionPercentage", completionPercentage(state));
 
-        ArrayNode rep = n.putArray("repartition");
-        for (String dev : assignedDevs) {
-            ObjectNode r = MAPPER.createObjectNode();
-            r.put("developer", dev);
+        // Repartition: sort developers by number of assigned tickets ASC (stable by original order)
+        final class RepRow {
+            final int idx;
+            final String dev;
+            final List<Integer> assigned;
 
-            ArrayNode assigned = r.putArray("assignedTickets");
-            // In test 2 there are none, but implement correctly:
+            RepRow(int idx, String dev, List<Integer> assigned) {
+                this.idx = idx;
+                this.dev = dev;
+                this.assigned = assigned;
+            }
+        }
+
+        List<RepRow> repRows = new ArrayList<>();
+        for (int i = 0; i < assignedDevs.size(); i++) {
+            String dev = assignedDevs.get(i);
+            List<Integer> assigned = new ArrayList<>();
             for (int tid : tickets) {
                 Ticket tt = state.findTicket(tid);
                 if (tt != null && dev.equals(tt.getAssignedTo())) {
                     assigned.add(tid);
                 }
+            }
+            Collections.sort(assigned);
+            repRows.add(new RepRow(i, dev, assigned));
+        }
+
+        repRows.sort((a, b) -> {
+            int c = Integer.compare(a.assigned.size(), b.assigned.size());
+            if (c != 0) return c;
+            return Integer.compare(a.idx, b.idx);
+        });
+
+        ArrayNode rep = n.putArray("repartition");
+        for (RepRow rr : repRows) {
+            ObjectNode r = MAPPER.createObjectNode();
+            r.put("developer", rr.dev);
+            ArrayNode assigned = r.putArray("assignedTickets");
+            for (int tid : rr.assigned) {
+                assigned.add(tid);
             }
             rep.add(r);
         }
