@@ -25,6 +25,7 @@ public final class Ticket {
     @Setter
     private String assignedAt = "";
     @Getter
+    @Setter
     private String solvedAt = "";
     private String assignedTo = "";
     private String reportedBy = "";
