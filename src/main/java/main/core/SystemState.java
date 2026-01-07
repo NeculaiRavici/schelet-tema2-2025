@@ -1,5 +1,7 @@
 package main.core;
 
+import lombok.Getter;
+import lombok.Setter;
 import main.model.Milestone;
 import main.model.Ticket;
 import main.model.User;
@@ -8,9 +10,9 @@ import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
 
-public class SystemState {
+public final class SystemState {
     private static final SystemState INSTANCE = new SystemState();
-
+    @Getter
     public final Map<String, User> users = new HashMap<>();
     public final List<Ticket> tickets = new ArrayList<>();
 
@@ -18,12 +20,15 @@ public class SystemState {
     private final Map<String, Milestone> milestonesByName = new HashMap<>();
     private final Map<Integer, String> ticketToMilestone = new HashMap<>();
 
-    public int nextTicketId = 0;
+    private int nextTicketId = 0;
     public boolean stopped = false;
 
     // --- Testing phase tracking (12 days) ---
     private static final int TESTING_DAYS = 12;
     private LocalDate testingStartDate = null;
+
+    private final Map<String, List<String>> notifications = new HashMap<>();
+    private final Map<String, String> lastNotificationDate = new HashMap<>();
 
     private SystemState() {
     }
@@ -89,7 +94,7 @@ public class SystemState {
         return milestonesByName.get(name);
     }
 
-    public Collection<Milestone> getAllMilestones() {
+    public java.util.Collection<main.model.Milestone> getAllMilestones() {
         return milestonesByName.values();
     }
 
@@ -107,10 +112,38 @@ public class SystemState {
         milestonesByName.clear();
          ticketToMilestone.clear();
 
+        notifications.clear();
+        lastNotificationDate.clear();
+
         nextTicketId = 0;
         stopped = false;
 
          testingStartDate = null;
     }
+    public void pushNotification(final String username, final String message) {
+        notifications.computeIfAbsent(username, k -> new ArrayList<>()).add(message);
+    }
+
+    public List<String> consumeNotifications(final String username) {
+        List<String> list = notifications.get(username);
+        if (list == null) {
+            return new ArrayList<>();
+        }
+        List<String> out = new ArrayList<>(list);
+        list.clear(); // consume
+        return out;
+    }
+
+    public boolean markOnce(final String key, final String dateIso) {
+        String prev = lastNotificationDate.get(key);
+        if (dateIso.equals(prev)) {
+            return false;
+        }
+        lastNotificationDate.put(key, dateIso);
+        return true;
+    }
+    public boolean silentMode = false;
+    public void setSilentMode(boolean v) { silentMode = v; }
+    public boolean isSilentMode() { return silentMode; }
 
 }

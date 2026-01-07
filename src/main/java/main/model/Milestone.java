@@ -126,7 +126,9 @@ public final class Milestone {
         return out;
     }
     private double completionPercentage(final SystemState state) {
-        if (tickets.isEmpty()) return 0.0;
+        if (tickets.isEmpty()) {
+            return 0.0;
+        }
         int closed = closedTickets(state).size();
         double frac = closed / (double) tickets.size(); // fraction, not percent
         return Math.round(frac * 100.0) / 100.0;        // 2 decimals
@@ -206,4 +208,17 @@ public final class Milestone {
 
         return n;
     }
+    public java.util.List<Integer> getTickets() { return tickets; }
+    private boolean wasEverBlocked = false;
+
+    public void updateBlockedHistory(final SystemState state) {
+        if (isBlocked(state)) {
+            wasEverBlocked = true;
+        }
+    }
+
+    public boolean wasEverBlocked() {
+        return wasEverBlocked;
+    }
+
 }

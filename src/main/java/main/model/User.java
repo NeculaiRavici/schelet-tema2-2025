@@ -1,10 +1,5 @@
 package main.model;
 
-import com.fasterxml.jackson.databind.JsonNode;
-
-import java.util.ArrayList;
-import java.util.List;
-
 public class User {
     private final String username;
     private final String email;
@@ -48,7 +43,9 @@ public class User {
 
             ExpertiseArea exp = ExpertiseArea.valueOf(expStr);
             SeniorityLevel sen = SeniorityLevel.valueOf(senStr);
-            return new Developer(username, email, exp, sen,hireDate);
+            String managerUsername = node.has("managerUsername") ? node.get("managerUsername").asText() : "";
+            return new Developer(username, email, exp, sen, hireDate, managerUsername);
+
         }
 
         return new User(username, email, role);

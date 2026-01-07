@@ -24,6 +24,7 @@ public final class Ticket {
     @Getter
     @Setter
     private String assignedAt = "";
+    @Getter
     private String solvedAt = "";
     private String assignedTo = "";
     private String reportedBy = "";
@@ -193,7 +194,9 @@ public final class Ticket {
     }
     private java.util.List<String> tempMatchingWords = java.util.Collections.emptyList();
 
-    public String getTitle() { return title; } // ensure exists
+    public String getTitle() {
+        return title;
+    }
 
     public void setTempMatchingWords(final java.util.List<String> words) {
         this.tempMatchingWords = (words == null) ? java.util.Collections.emptyList() : new java.util.ArrayList<>(words);
@@ -206,5 +209,21 @@ public final class Ticket {
     public void clearTempMatchingWords() {
         this.tempMatchingWords = java.util.Collections.emptyList();
     }
+    private String frequency = "";        // BUG
+    private String businessValue = "";    // FEATURE_REQUEST / UI_FEEDBACK
+    private String customerDemand = "";   // FEATURE_REQUEST
+    private Integer usabilityScore = null; // UI_FEEDBACK
+
+    public String getFrequency() { return frequency; }
+    public void setFrequency(final String frequency) { this.frequency = frequency; }
+
+    public String getBusinessValue() { return businessValue; }
+    public void setBusinessValue(final String businessValue) { this.businessValue = businessValue; }
+
+    public String getCustomerDemand() { return customerDemand; }
+    public void setCustomerDemand(final String customerDemand) { this.customerDemand = customerDemand; }
+
+    public Integer getUsabilityScore() { return usabilityScore; }
+    public void setUsabilityScore(final Integer usabilityScore) { this.usabilityScore = usabilityScore; }
 
 }

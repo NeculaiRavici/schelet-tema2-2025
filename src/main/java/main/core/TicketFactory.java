@@ -38,6 +38,17 @@ public final class TicketFactory {
         if (exp != null && exp.isTextual()) {
             t.setExpertiseArea(exp.asText());
         }
+        JsonNode freq = params.get("frequency");
+        if (freq != null && freq.isTextual()) t.setFrequency(freq.asText());
+
+        JsonNode bv = params.get("businessValue");
+        if (bv != null && bv.isTextual()) t.setBusinessValue(bv.asText());
+
+        JsonNode cd = params.get("customerDemand");
+        if (cd != null && cd.isTextual()) t.setCustomerDemand(cd.asText());
+
+        JsonNode us = params.get("usabilityScore");
+        if (us != null && us.isInt()) t.setUsabilityScore(us.asInt());
 
         return t;
     }
