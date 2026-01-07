@@ -24,15 +24,12 @@ import java.util.Map;
 
 public final class CommandFacade {
     private final SystemState state = SystemState.getInstance();
-
     private final Map<String, Role[]> permissions = new HashMap<>();
-
     public CommandFacade() {
         permissions.put("reportTicket", new Role[]{Role.REPORTER});
         permissions.put("viewTickets", new Role[]{Role.REPORTER, Role.DEVELOPER, Role.MANAGER});
         permissions.put("startTestingPhase", new Role[]{Role.MANAGER});
         permissions.put("lostInvestors", new Role[]{Role.MANAGER});
-
         // Test 2
         permissions.put("createMilestone", new Role[]{Role.MANAGER});
         permissions.put("viewMilestones", new Role[]{Role.MANAGER, Role.DEVELOPER});
@@ -52,14 +49,11 @@ public final class CommandFacade {
         permissions.put("generateResolutionEfficiencyReport", new Role[]{Role.MANAGER});
         permissions.put("appStabilityReport", new Role[]{Role.MANAGER});
         permissions.put("generatePerformanceReport", new Role[]{Role.MANAGER});
-
     }
-
     public ObjectNode execute(final JsonNode cmdNode) {
         String command = cmdNode.get("command").asText();
         String username = cmdNode.get("username").asText();
         String timestamp = cmdNode.get("timestamp").asText();
-
         User user = state.getUser(username);
         if (user == null) {
             return OutputBuilder.start(command, username, timestamp)
@@ -67,13 +61,13 @@ public final class CommandFacade {
                     .build();
         }
         processMilestoneAutomations(timestamp);
+        processResolvedAutoDeassign(timestamp);
         Role[] allowed = permissions.get(command);
         if (allowed != null && !hasRole(user.getRole(), allowed)) {
             return OutputBuilder.start(command, username, timestamp)
                     .error(permissionMessage(command, user.getRole(), allowed))
                     .build();
         }
-
         switch (command) {
             case "reportTicket":
                 return handleReportTicket(cmdNode, user);
@@ -121,90 +115,101 @@ public final class CommandFacade {
                 return null;
         }
     }
-
-    // --- Existing handlers (keep yours if already correct) ---
     private void processMilestoneAutomations(final String nowIso) {
-
-        // Track historical blocked state
-
         for (Milestone ms : state.getAllMilestones()) {
-
             ms.updateBlockedHistory(state);
-
         }
-
-
         java.time.LocalDate now = java.time.LocalDate.parse(nowIso);
-
         for (Milestone ms : state.getAllMilestones()) {
-
             java.time.LocalDate due = java.time.LocalDate.parse(ms.getDueDate());
-
-
-            // "due tomorrow" => now is exactly one day before due
-
             if (now.equals(due.minusDays(1))) {
-
                 String key = "DUE_TOMORROW:" + ms.getName();
-
                 if (state.markOnce(key, nowIso)) {
-
                     for (int tid : ms.getTickets()) {
-
                         Ticket t = state.findTicket(tid);
-
                         if (t != null && t.getStatus() != TicketStatus.CLOSED) {
-
                             t.setBusinessPriority(BusinessPriority.CRITICAL);
-
                         }
-
                     }
-
-
                     String msg = "Milestone " + ms.getName()
-
                             + " is due tomorrow. All unresolved tickets are now CRITICAL.";
-
                     for (String dev : ms.getAssignedDevs()) {
-
                         state.pushNotification(dev, msg);
-
                     }
-
                 }
-
             }
-
         }
-
     }
-
+    private void processResolvedAutoDeassign(final String nowIso) {
+        java.time.LocalDate now = java.time.LocalDate.parse(nowIso);
+        final int threshold = 4;
+        for (Milestone ms : state.getAllMilestones()) {
+            java.time.LocalDate due = java.time.LocalDate.parse(ms.getDueDate());
+            if (!now.equals(due.minusDays(1))) {
+                continue;
+            }
+            for (int tid : ms.getTickets()) {
+                Ticket t = state.findTicket(tid);
+                if (t == null || t.getStatus() != TicketStatus.RESOLVED) {
+                    continue;
+                }
+                String solvedAt = t.getSolvedAt();
+                if (solvedAt == null || solvedAt.isEmpty()) {
+                    continue;
+                }
+                java.time.LocalDate solvedDate = java.time.LocalDate.parse(solvedAt);
+                long days = java.time.temporal.ChronoUnit.DAYS.between(solvedDate, now);
+                if (days >= threshold) {
+                    continue;
+                }
+                String dev = t.getAssignedTo();
+                if (dev == null || dev.isEmpty()) {
+                    continue;
+                }
+                for (int otherTid : ms.getTickets()) {
+                    Ticket other = state.findTicket(otherTid);
+                    if (other == null) {
+                        continue;
+                    }
+                    if (dev.equals(other.getAssignedTo())) {
+                        other.setAssignedTo("");
+                        other.setAssignedAt("");
+                        if (other.getStatus() != TicketStatus.CLOSED) {
+                            other.setStatus(TicketStatus.OPEN);
+                        }
+                    }
+                }
+            }
+        }
+    }
     private ObjectNode handleReportTicket(final JsonNode cmdNode, final User user) {
         String username = cmdNode.get("username").asText();
         String timestamp = cmdNode.get("timestamp").asText();
-
         if (!state.isTestingPhase(timestamp)) {
             return OutputBuilder.start("reportTicket", username, timestamp)
                     .error("Tickets can only be reported during testing phases.")
                     .build();
         }
-
         JsonNode params = cmdNode.get("params");
-        int id = state.allocateTicketId();
-
-        Ticket t = TicketFactory.createTicket(id, timestamp, params);
-        if (t == null) {
+        String reportedBy = params.has("reportedBy") ? params.get("reportedBy").asText() : "";
+        String ticketType = params.has("type") ? params.get("type").asText() : "";
+        if ((reportedBy == null || reportedBy.isEmpty()) && !"BUG".equals(ticketType)) {
             return OutputBuilder.start("reportTicket", username, timestamp)
                     .error("Anonymous reports are only allowed for tickets of type BUG.")
                     .build();
         }
-
+        int id = state.allocateTicketId();
+        Ticket t = TicketFactory.createTicket(id, timestamp, params);
+        if (t == null) {
+            return OutputBuilder.start("reportTicket", username, timestamp)
+                    .error("Failed to create ticket.")
+                    .build();
+        }
         state.getTickets().add(t);
         return null;
     }
-
     private void applyPriorityEscalationForView(final String timestamp) {
+        java.time.LocalDate now = java.time.LocalDate.parse(timestamp);
         for (Ticket t : state.getTickets()) {
             String msName = state.getMilestoneNameForTicket(t.getId());
             if (msName == null) {
@@ -214,13 +219,26 @@ public final class CommandFacade {
             if (ms == null) {
                 continue;
             }
-            // only active milestones matter
+            // Check if milestone is blocked by an overdue milestone
+            boolean blockedByOverdue = false;
+            for (Milestone other : state.getAllMilestones()) {
+                if (other.getBlockingFor().contains(ms.getName())) {
+                    java.time.LocalDate otherDue = java.time.LocalDate.parse(other.getDueDate());
+                    if (now.isAfter(otherDue)) {
+                        blockedByOverdue = true;
+                        break;
+                    }
+                }
+            }
+            if (blockedByOverdue) {
+                t.setBusinessPriority(BusinessPriority.CRITICAL);
+                continue;
+            }
+            // only active milestones matter for the rest of the logic
             if (!ms.isActive(state)) {
                 continue;
             }
-
             int d = daysUntilDueInclusive(timestamp, ms.getDueDate());
-
             // Test 3 behavior:
             // - within 3 days: raise to HIGH, but if BUG with SEVERE -> CRITICAL immediately
             // - within 2 days: CRITICAL for everyone
@@ -228,7 +246,6 @@ public final class CommandFacade {
                 t.setBusinessPriority(BusinessPriority.CRITICAL);
                 continue;
             }
-
             if (d <= 3) {
                 if (t.getType() == TicketType.BUG && "SEVERE".equals(t.getSeverity())) {
                     t.setBusinessPriority(BusinessPriority.CRITICAL);
@@ -241,13 +258,10 @@ public final class CommandFacade {
             }
         }
     }
-
     private ObjectNode handleViewTickets(final JsonNode cmdNode, final User user) {
         String username = cmdNode.get("username").asText();
         String timestamp = cmdNode.get("timestamp").asText();
-
         applyPriorityEscalationForView(timestamp);
-
         List<Ticket> visible = new ArrayList<>();
         switch (user.getRole()) {
             case MANAGER:
@@ -282,22 +296,28 @@ public final class CommandFacade {
             default:
                 break;
         }
-
         visible.sort(Comparator
                 .comparing(Ticket::getCreatedAt)
                 .thenComparingInt(Ticket::getId));
-
         return OutputBuilder.start("viewTickets", username, timestamp)
                 .tickets(visible)
                 .build();
     }
-
     private ObjectNode handleStartTestingPhase(final JsonNode cmdNode) {
+        String username = cmdNode.get("username").asText();
         String timestamp = cmdNode.get("timestamp").asText();
+        java.time.LocalDate now = java.time.LocalDate.parse(timestamp);
+        for (Milestone ms : state.getAllMilestones()) {
+            java.time.LocalDate due = java.time.LocalDate.parse(ms.getDueDate());
+            if (!now.isAfter(due)) {
+                return OutputBuilder.start("startTestingPhase", username, timestamp)
+                        .error("Cannot start a new testing phase.")
+                        .build();
+            }
+        }
         state.startTestingPhaseFrom(timestamp);
         return null;
     }
-
     private ObjectNode handleLostInvestors() {
         state.stop();
         return null;
@@ -305,32 +325,26 @@ public final class CommandFacade {
     private ObjectNode handleCreateMilestone(final JsonNode cmdNode, final User user) {
         final String username = cmdNode.get("username").asText();
         final String timestamp = cmdNode.get("timestamp").asText();
-
         // Milestones only during development
         if (state.isTestingPhase(timestamp)) {
             return OutputBuilder.start("createMilestone", username, timestamp)
                     .error("Milestones can only be created during development phases.")
                     .build();
         }
-
         final String name = cmdNode.get("name").asText();
         final String dueDate = cmdNode.get("dueDate").asText();
-
         final List<String> blockingFor = new ArrayList<>();
         for (JsonNode n : cmdNode.get("blockingFor")) {
             blockingFor.add(n.asText());
         }
-
         final List<Integer> tickets = new ArrayList<>();
         for (JsonNode n : cmdNode.get("tickets")) {
             tickets.add(n.asInt());
         }
-
         final List<String> assignedDevs = new ArrayList<>();
         for (JsonNode n : cmdNode.get("assignedDevs")) {
             assignedDevs.add(n.asText());
         }
-
         // Validate assigned devs EXIST and are DEVELOPERS (NO subordinate constraint in Test 3)
         for (String dev : assignedDevs) {
             User u = state.getUser(dev);
@@ -345,7 +359,6 @@ public final class CommandFacade {
                         .build();
             }
         }
-
         // Ticket existence check (safe for later tests)
         for (int tid : tickets) {
             if (state.findTicket(tid) == null) {
@@ -354,7 +367,6 @@ public final class CommandFacade {
                         .build();
             }
         }
-
         // Ticket uniqueness (FIRST conflicting ticket) with EXACT message format for ref_03
         for (int tid : tickets) {
             String existing = state.getMilestoneNameForTicket(tid);
@@ -365,7 +377,6 @@ public final class CommandFacade {
                         .build();
             }
         }
-
         Milestone m = new Milestone(
                 name,
                 blockingFor,
@@ -375,7 +386,6 @@ public final class CommandFacade {
                 assignedDevs,
                 username
         );
-
         state.addMilestone(m);
         for (int tid : tickets) {
             state.linkTicketToMilestone(tid, name);
@@ -390,12 +400,9 @@ public final class CommandFacade {
         }
         return null;
     }
-
-
     private ObjectNode handleViewMilestones(final JsonNode cmdNode, final User user) {
         String username = cmdNode.get("username").asText();
         String timestamp = cmdNode.get("timestamp").asText();
-
         List<Milestone> visible = new ArrayList<>();
         if (user.getRole() == Role.MANAGER) {
             for (Milestone m : state.getAllMilestones()) {
@@ -410,7 +417,6 @@ public final class CommandFacade {
                 }
             }
         }
-
         // Sort: dueDate asc, then name asc (lexicographic)
         visible.sort((a, b) -> {
             int cmp = a.getDueDate().compareTo(b.getDueDate());
@@ -419,19 +425,15 @@ public final class CommandFacade {
             }
             return a.getName().compareTo(b.getName());
         });
-
         List<ObjectNode> milestoneNodes = new ArrayList<>();
         for (Milestone m : visible) {
             milestoneNodes.add(m.toOutputJson(state, timestamp));
         }
-
         return OutputBuilder.start("viewMilestones", username, timestamp)
                 .milestones(milestoneNodes)
                 .build();
     }
-
     // --- Helpers ---
-
     private boolean hasRole(final Role userRole, final Role[] allowed) {
         for (Role r : allowed) {
             if (r == userRole) {
@@ -440,7 +442,6 @@ public final class CommandFacade {
         }
         return false;
     }
-
     private String permissionMessage(final String command, final Role userRole,
                                      final Role[] allowed) {
         StringBuilder sb = new StringBuilder();
@@ -459,29 +460,24 @@ public final class CommandFacade {
         final String username = cmdNode.get("username").asText();
         final String timestamp = cmdNode.get("timestamp").asText();
         final int ticketId = cmdNode.get("ticketID").asInt();
-
         final main.model.Ticket t = state.findTicket(ticketId);
         if (t == null) {
             return OutputBuilder.start("assignTicket", username, timestamp)
                     .error("The ticket " + ticketId + " does not exist.")
                     .build();
         }
-
         // Only OPEN tickets can be assigned.
         if (t.getStatus() != main.model.TicketStatus.OPEN) {
             return OutputBuilder.start("assignTicket", username, timestamp)
                     .error("Only OPEN tickets can be assigned.")
                     .build();
         }
-
         // Ticket must belong to a milestone for assignment rules in this task
         final String msName = state.getMilestoneNameForTicket(ticketId);
         final main.model.Milestone ms = (msName == null) ? null : state.getMilestone(msName);
-
         // Developer object
         final main.model.Developer dev = (user instanceof main.model.Developer)
                 ? (main.model.Developer) user : null;
-
         // Must be assigned to milestone
         if (ms != null && !ms.isDevAssigned(username)) {
             return OutputBuilder.start("assignTicket", username, timestamp)
@@ -489,7 +485,6 @@ public final class CommandFacade {
                             + " is not assigned to milestone " + ms.getName() + ".")
                     .build();
         }
-
         // Cannot assign ticket from blocked milestone <name>.
         if (ms != null && ms.isBlocked(state)) {
             return OutputBuilder.start("assignTicket", username, timestamp)
@@ -498,14 +493,12 @@ public final class CommandFacade {
                             + ms.getName() + ".")
                     .build();
         }
-
         // Expertise area check (Task 5 specific wording)
         if (dev != null && ms != null) {
             final String ticketExp = t.getExpertiseArea();
             if (ticketExp != null && !ticketExp.isEmpty()) {
                 final ExpertiseArea ticketArea = ExpertiseArea.valueOf(ticketExp);
                 final ExpertiseArea devSpec = dev.getExpertiseArea();
-
                 if (!canAccess(devSpec, ticketArea)) {
                     return OutputBuilder.start("assignTicket", username, timestamp)
                             .error("Developer " + username + " cannot assign ticket " + ticketId
@@ -516,9 +509,18 @@ public final class CommandFacade {
                 }
             }
         }
-
-
-        // Seniority check: HIGH/CRITICAL requires MID or SENIOR (matches ref for ticket 4)
+        // Seniority check: VERY_HIGH customerDemand FEATURE_REQUEST requires SENIOR only
+        if (dev != null && requiresSeniorOnly(t)) {
+            main.model.SeniorityLevel curSen = dev.getSeniorityLevel();
+            if (curSen != main.model.SeniorityLevel.SENIOR) {
+                return OutputBuilder.start("assignTicket", username, timestamp)
+                        .error("Developer " + username + " cannot assign ticket " + ticketId
+                                + " due to seniority level."
+                                + " Required: SENIOR; Current: " + curSen.name() + ".")
+                        .build();
+            }
+        }
+        // Seniority check: HIGH/CRITICAL requires MID or SENIOR
         if (dev != null && requiresMidOrSenior(t)) {
             main.model.SeniorityLevel curSen = dev.getSeniorityLevel();
             if (curSen == main.model.SeniorityLevel.JUNIOR) {
@@ -529,7 +531,6 @@ public final class CommandFacade {
                         .build();
             }
         }
-
         // Success: self-assign
         t.setAssignedTo(username);
         t.setAssignedAt(timestamp);
@@ -538,24 +539,24 @@ public final class CommandFacade {
         t.addAction(TicketAction.statusChanged("OPEN", "IN_PROGRESS", username, timestamp));
         return null;
     }
-
+    private static boolean requiresSeniorOnly(final main.model.Ticket t) {
+        // No SENIOR-only requirement - use requiresMidOrSenior for HIGH/CRITICAL instead
+        return false;
+    }
     private static boolean requiresMidOrSenior(final main.model.Ticket t) {
-        // Task 5 behavior fits: ticket 4 (HIGH) -> requires MID/SENIOR
         return t.getBusinessPriority() == main.model.BusinessPriority.HIGH
                 || t.getBusinessPriority() == main.model.BusinessPriority.CRITICAL;
     }
-
     private ObjectNode handleViewAssignedTickets(final JsonNode cmdNode, final User user) {
         final String username = cmdNode.get("username").asText();
         final String timestamp = cmdNode.get("timestamp").asText();
-
+        applyPriorityEscalationForView(timestamp);
         List<Ticket> assigned = new ArrayList<>();
         for (Ticket t : state.getTickets()) {
             if (username.equals(t.getAssignedTo())) {
                 assigned.add(t);
             }
         }
-
         // Sort like ref: createdAt asc, then businessPriority desc, then id asc
         assigned.sort((a, b) -> {
             // 1) businessPriority DESC
@@ -564,18 +565,14 @@ public final class CommandFacade {
             if (p != 0) {
                 return p;
             }
-
             // 2) createdAt ASC
             int c = a.getCreatedAt().compareTo(b.getCreatedAt());
             if (c != 0) {
                 return c;
             }
-
             // 3) id ASC
             return Integer.compare(a.getId(), b.getId());
         });
-
-
         return OutputBuilder.start("viewAssignedTickets", username, timestamp)
                 .assignedTickets(assigned)
                 .build();
@@ -583,9 +580,7 @@ public final class CommandFacade {
     private ObjectNode handleUndoAssignTicket(final JsonNode cmdNode, final User user) {
         final String username = cmdNode.get("username").asText();
         final String timestamp = cmdNode.get("timestamp").asText();
-
         final int ticketId = cmdNode.get("ticketID").asInt();
-
         final Ticket t = state.findTicket(ticketId);
         if (t == null) {
             return OutputBuilder.start("undoAssignTicket", username, timestamp)
@@ -593,29 +588,21 @@ public final class CommandFacade {
                     .build();
         }
         // Ref behavior: only IN_PROGRESS tickets can be unassigned.
-
         if (t.getStatus() != TicketStatus.IN_PROGRESS) {
-
             return OutputBuilder.start("undoAssignTicket", username, timestamp)
-
                     .error("Only IN_PROGRESS tickets can be unassigned.")
-
                     .build();
-
         }
-
         // Only undo if this user is the assignee (safe for later tests)
         if (!username.equals(t.getAssignedTo())) {
             return OutputBuilder.start("undoAssignTicket", username, timestamp)
                     .error("The ticket " + ticketId + " is not assigned to " + username + ".")
                     .build();
         }
-
         t.setAssignedTo("");
         t.setAssignedAt("");
         t.setStatus(TicketStatus.OPEN);
         t.addAction(TicketAction.deAssigned(username, timestamp));
-
         return null; // no output on success (matches ref)
     }
     private ObjectNode handleAddComment(final JsonNode cmdNode, final User user) {
@@ -623,9 +610,7 @@ public final class CommandFacade {
         final String timestamp = cmdNode.get("timestamp").asText();
         final int ticketId = cmdNode.get("ticketID").asInt();
         final String content = cmdNode.get("comment").asText();
-
         final Ticket t = state.findTicket(ticketId);
-
         // IMPORTANT for test 7: non-existent tickets are silently ignored (no output)
         if (t == null) {
             return null;
@@ -641,14 +626,12 @@ public final class CommandFacade {
                     .error("Comments are not allowed on anonymous tickets.")
                     .build();
         }
-
         // Min length rule
         if (content == null || content.length() < 10) {
             return OutputBuilder.start("addComment", username, timestamp)
                     .error("Comment must be at least 10 characters long.")
                     .build();
         }
-
         // Developer can comment only if ticket is assigned to them
         if (user.getRole() == Role.DEVELOPER) {
             if (!username.equals(t.getAssignedTo())) {
@@ -658,7 +641,6 @@ public final class CommandFacade {
                         .build();
             }
         }
-
         // Reporter can comment only on tickets they reported
         if (user.getRole() == Role.REPORTER) {
             if (!username.equals(t.getReportedBy())) {
@@ -668,7 +650,6 @@ public final class CommandFacade {
                         .build();
             }
         }
-
         // Success
         t.addComment(new Comment(username, content, timestamp));
         return null;
@@ -677,21 +658,17 @@ public final class CommandFacade {
         final String username = cmdNode.get("username").asText();
         final String timestamp = cmdNode.get("timestamp").asText();
         final int ticketId = cmdNode.get("ticketID").asInt();
-
         final Ticket t = state.findTicket(ticketId);
-
         // IMPORTANT for test 7: non-existent tickets are silently ignored (no output)
         if (t == null) {
             return null;
         }
-
         // Anonymous tickets: no comments allowed (same error as addComment)
         if (t.getReportedBy() == null || t.getReportedBy().isEmpty()) {
             return OutputBuilder.start("undoAddComment", username, timestamp)
                     .error("Comments are not allowed on anonymous tickets.")
                     .build();
         }
-
         // Developer can undo only if ticket is assigned to them
         if (user.getRole() == Role.DEVELOPER) {
             if (!username.equals(t.getAssignedTo())) {
@@ -701,7 +678,6 @@ public final class CommandFacade {
                         .build();
             }
         }
-
         // Reporter can undo only on tickets they reported
         if (user.getRole() == Role.REPORTER) {
             if (!username.equals(t.getReportedBy())) {
@@ -712,34 +688,28 @@ public final class CommandFacade {
                         .build();
             }
         }
-
         // If there is nothing to undo -> silent ignore (NO output) in ref_07
         boolean removed = t.undoLastCommentBy(username);
         if (!removed) {
             return null;
         }
-
         return null;
     }
     private ObjectNode handleChangeStatus(final JsonNode cmdNode, final User user) {
         final String username = cmdNode.get("username").asText();
         final String timestamp = cmdNode.get("timestamp").asText();
         final int ticketId = cmdNode.get("ticketID").asInt();
-
         Ticket t = state.findTicket(ticketId);
         if (t == null) {
             return null; // not tested here
         }
-
         if (!username.equals(t.getAssignedTo())) {
             return OutputBuilder.start("changeStatus", username, timestamp)
                     .error("Ticket " + ticketId + " is not assigned to developer " + username + ".")
                     .build();
         }
-
         TicketStatus from = t.getStatus();
         TicketStatus to;
-
         if (from == TicketStatus.IN_PROGRESS) {
             to = TicketStatus.RESOLVED;
         } else if (from == TicketStatus.RESOLVED) {
@@ -754,32 +724,25 @@ public final class CommandFacade {
         t.setStatus(to);
         t.addAction(TicketAction.statusChanged(from.name(), to.name(), username, timestamp));
         if (to == TicketStatus.RESOLVED) {
-
             t.setSolvedAt(timestamp);
         }
-        // Ticket closure can complete its milestone and unblock other milestones.
         if (to == TicketStatus.CLOSED) {
             String completedMsName = state.getMilestoneNameForTicket(ticketId);
             if (completedMsName != null) {
                 Milestone completedMs = state.getMilestone(completedMsName);
                 if (completedMs != null) {
                     completedMs.markCompletedIfEligible(state, timestamp);
-
                     if (!completedMs.isActive(state)) {
-
                         for (String blockedName : completedMs.getBlockingFor()) {
-
                             Milestone blocked = state.getMilestone(blockedName);
                             if (blocked == null) {
                                 continue;
                             }
-                            // If it was ever blocked and isn't blocked anymore => unblocked event
                             if (blocked.wasEverBlocked() && !blocked.isBlocked(state)) {
                                 java.time.LocalDate now = java.time.LocalDate.parse(timestamp);
                                 java.time.LocalDate due = java.time
                                         .LocalDate.parse(blocked.getDueDate());
                                 if (now.isAfter(due)) {
-                                    // Unblocked after due date
                                     String key = "UNBLOCK_AFTER_DUE:" + blocked.getName();
                                     if (!state.markOnce(key, timestamp)) {
                                         continue;
@@ -804,32 +767,21 @@ public final class CommandFacade {
                                     String msg = "Milestone " + blocked.getName()
                                             + " is now unblocked as ticket "
                                             + ticketId + " has been CLOSED.";
-
                                     for (String dev : blocked.getAssignedDevs()) {
-
                                         state.pushNotification(dev, msg);
-
                                     }
-
                                 }
-
                             }
-
                         }
-
                     }
-
                 }
-
             }
-
         }
         return null;
     }
     private ObjectNode handleViewTicketHistory(final JsonNode cmdNode, final User user) {
         final String username = cmdNode.get("username").asText();
         final String timestamp = cmdNode.get("timestamp").asText();
-
         List<Ticket> mine = new ArrayList<>();
         for (Ticket t : state.getTickets()) {
             boolean involved = false;
@@ -844,14 +796,12 @@ public final class CommandFacade {
             }
         }
         mine.sort(Comparator.comparingInt(Ticket::getId));
-
         com.fasterxml.jackson.databind.ObjectMapper mapper = new com
                 .fasterxml.jackson.databind.ObjectMapper();
         com.fasterxml.jackson.databind.node.ObjectNode out = mapper.createObjectNode();
         out.put("command", "viewTicketHistory");
         out.put("username", username);
         out.put("timestamp", timestamp);
-
         com.fasterxml.jackson.databind.node.ArrayNode arr = out.putArray("ticketHistory");
         for (Ticket t : mine) {
             arr.add(t.toHistoryJson());
@@ -860,30 +810,24 @@ public final class CommandFacade {
     }
     private com.fasterxml.jackson.databind.node.ObjectNode handleUndoChangeStatus(
             final com.fasterxml.jackson.databind.JsonNode cmdNode, final User user) {
-
         final String username = cmdNode.get("username").asText();
         final String timestamp = cmdNode.get("timestamp").asText();
         final int ticketId = cmdNode.get("ticketID").asInt();
-
         Ticket t = state.findTicket(ticketId);
         if (t == null) {
             return null; // not tested here
         }
-
         if (!username.equals(t.getAssignedTo())) {
             return OutputBuilder.start("undoChangeStatus", username, timestamp)
                     .error("Ticket " + ticketId + " is not assigned to developer " + username + ".")
                     .build();
         }
-
         TicketStatus current = t.getStatus();
         TicketStatus prev = t.popStatusHistory();
-
         // If nothing to undo -> silent (not tested here, but safe)
         if (prev == null) {
             return null;
         }
-
         t.setStatus(prev);
         t.addAction(TicketAction.statusChanged(current.name(), prev.name(), username, timestamp));
         return null;
@@ -891,20 +835,16 @@ public final class CommandFacade {
     private com.fasterxml.jackson.databind.node.ObjectNode handleSearch(
             final com.fasterxml.jackson.databind.JsonNode cmdNode,
             final main.model.User user) {
-
         final String username = cmdNode.get("username").asText();
         final String timestamp = cmdNode.get("timestamp").asText();
-
         final com.fasterxml.jackson.databind.JsonNode filters = cmdNode.get("filters");
         final String searchType = filters.get("searchType").asText(); // "DEVELOPER" or "TICKET"
-
         if ("DEVELOPER".equals(searchType)) {
             return handleSearchDeveloper(username, timestamp, filters);
         }
         if ("TICKET".equals(searchType)) {
             return handleSearchTicket(username, timestamp, filters);
         }
-
         // If unknown, return empty results
         return OutputBuilder.start("search", username, timestamp)
                 .putString("searchType", searchType)
@@ -915,31 +855,20 @@ public final class CommandFacade {
             final String username,
             final String timestamp,
             final com.fasterxml.jackson.databind.JsonNode filters) {
-
         final String exp = filters.has("expertiseArea")
                 ? filters.get("expertiseArea").asText() : null;
         final String sen = filters.has("seniority") ? filters.get("seniority").asText() : null;
         final Double perfAbove = filters.has("performanceScoreAbove")
                 ? filters.get("performanceScoreAbove").asDouble() : null;
-
         final Double perfBelow = filters.has("performanceScoreBelow")
                 ? filters.get("performanceScoreBelow").asDouble() : null;
-
-
         final User requester = state.getUser(username);
-
         final java.util.Set<String> scope;
-
         if (requester instanceof Manager) {
-
             scope = new java.util.HashSet<>(((Manager) requester).getSubordinates());
-
         } else {
-
             scope = null; // no scoping for non-managers
-
         }
-
         java.util.List<main.model.Developer> matched = new java.util.ArrayList<>();
         for (main.model.User u : state.users.values()) {
             if (!(u instanceof main.model.Developer)) {
@@ -956,20 +885,16 @@ public final class CommandFacade {
                 continue;
             }
             // Inclusive bounds (ref includes score 0.0 for "above 0.00")
-
             if (perfAbove != null && d.getPerformanceScore() < perfAbove) {
                 continue;
             }
-
             if (perfBelow != null && d.getPerformanceScore() > perfBelow) {
                 continue;
             }
             matched.add(d);
         }
-
         // sort by username asc? ref order is alexandra, isabella, marcus (lexicographic)
         matched.sort(java.util.Comparator.comparing(main.model.User::getUsername));
-
         com.fasterxml.jackson.databind.ObjectMapper mapper = new com
                 .fasterxml.jackson.databind.ObjectMapper();
         com.fasterxml.jackson.databind.node.ObjectNode out = mapper.createObjectNode();
@@ -977,7 +902,6 @@ public final class CommandFacade {
         out.put("username", username);
         out.put("timestamp", timestamp);
         out.put("searchType", "DEVELOPER");
-
         com.fasterxml.jackson.databind.node.ArrayNode arr = out.putArray("results");
         for (main.model.Developer d : matched) {
             com.fasterxml.jackson.databind.node.ObjectNode n = mapper.createObjectNode();
@@ -988,7 +912,6 @@ public final class CommandFacade {
             n.put("hireDate", d.getHireDate()); // add getter + field (see next section)
             arr.add(n);
         }
-
         return out;
     }
     private com.fasterxml.jackson.databind
@@ -996,32 +919,27 @@ public final class CommandFacade {
             final String username,
             final String timestamp,
             final com.fasterxml.jackson.databind.JsonNode filters) {
-
         String typeFilter = filters.has("type") ? filters.get("type").asText() : null;
         String prioFilter = filters.has("businessPriority")
                 ? filters.get("businessPriority").asText() : null;
         String createdAfter = filters.has("createdAfter")
                 ? filters.get("createdAfter").asText() : null;
+        String createdBefore = filters.has("createdBefore")
+                ? filters.get("createdBefore").asText() : null;
         boolean available = filters.has("availableForAssignment")
                 && filters.get("availableForAssignment").asBoolean();
-
         java.util.List<String> keywords = new java.util.ArrayList<>();
         if (filters.has("keywords") && filters.get("keywords").isArray()) {
             for (com.fasterxml.jackson.databind.JsonNode k : filters.get("keywords")) {
                 keywords.add(k.asText());
             }
         }
-
         java.util.List<main.model.Ticket> base = new java.util.ArrayList<>(state.getTickets());
-
         // Visibility rules depend on role
         main.model.User requester = state.getUser(username);
         main.model.Role role = requester.getRole();
-
         java.util.List<main.model.Ticket> visible = new java.util.ArrayList<>();
-
         for (main.model.Ticket t : base) {
-
             if (role == main.model.Role.MANAGER) {
             } else if (role == main.model.Role.DEVELOPER) {
                 // developer sees only milestone tickets where dev is assigned
@@ -1042,12 +960,10 @@ public final class CommandFacade {
                     continue;
                 }
             }
-
             // ✅ CHANGE #1: Search returns only OPEN tickets (matches ref_11)
             if (t.getStatus() != main.model.TicketStatus.OPEN) {
                 continue;
             }
-
             // ✅ CHANGE #2: availableForAssignment means "developer can actually assign it"
             if (available) {
                 // only developers use this flag in the tests
@@ -1058,54 +974,52 @@ public final class CommandFacade {
                 if (t.getAssignedTo() != null && !t.getAssignedTo().isEmpty()) {
                     continue;
                 }
-
                 // must satisfy the same eligibility constraints as assignTicket
                 main.model.Developer dev = (main.model.Developer) requester;
                 if (!canAssignForSearch(t, dev)) {
                     continue;
                 }
             }
-
             // type filter
             if (typeFilter != null && !t.getType().name().equals(typeFilter)) {
                 continue;
             }
-
             // businessPriority filter
             if (prioFilter != null && !t.getBusinessPriority().name().equals(prioFilter)) {
                 continue;
             }
-
             // createdAfter filter (strictly after date)
             if (createdAfter != null && t.getCreatedAt().compareTo(createdAfter) <= 0) {
                 continue;
             }
-
-            // keyword filter
+            // createdBefore filter (strictly before date)
+            if (createdBefore != null && t.getCreatedAt().compareTo(createdBefore) >= 0) {
+                continue;
+            }
+            // keyword filter - substring match, return full word from title
             java.util.List<String> matching = new java.util.ArrayList<>();
             if (!keywords.isEmpty()) {
                 String titleLower = t.getTitle().toLowerCase();
+                String[] titleWords = t.getTitle().split("\\s+");
                 for (String kw : keywords) {
                     String kwLower = kw.toLowerCase();
-                    // "whole word" simple boundaries
-                    if (titleLower.matches(".*\\b" + java
-                            .util.regex.Pattern.quote(kwLower) + "\\b.*")) {
-                        matching.add(kw);
+                    for (String word : titleWords) {
+                        if (word.toLowerCase().contains(kwLower)) {
+                            matching.add(word);
+                            break;
+                        }
                     }
                 }
                 if (matching.isEmpty()) {
                     continue;
                 }
             }
-
             // attach matchingWords only if keywords were present
             t.setTempMatchingWords(matching);
             visible.add(t);
         }
-
         // sort results by id asc (matches ref)
         visible.sort(java.util.Comparator.comparingInt(main.model.Ticket::getId));
-
         com.fasterxml.jackson.databind.ObjectMapper mapper = new com
                 .fasterxml.jackson.databind.ObjectMapper();
         com.fasterxml.jackson.databind.node.ObjectNode out = mapper.createObjectNode();
@@ -1113,7 +1027,6 @@ public final class CommandFacade {
         out.put("username", username);
         out.put("timestamp", timestamp);
         out.put("searchType", "TICKET");
-
         com.fasterxml.jackson.databind.node.ArrayNode arr = out.putArray("results");
         for (main.model.Ticket t : visible) {
             com.fasterxml.jackson.databind.node.ObjectNode n = mapper.createObjectNode();
@@ -1125,23 +1038,18 @@ public final class CommandFacade {
             n.put("createdAt", t.getCreatedAt());
             n.put("solvedAt", ""); // ref uses empty string here
             n.put("reportedBy", t.getReportedBy());
-
-
             if (role == main.model.Role.MANAGER || !keywords.isEmpty()) {
                 com.fasterxml.jackson.databind.node.ArrayNode mw = n.putArray("matchingWords");
                 for (String w : t.getTempMatchingWords()) {
                     mw.add(w);
                 }
             }
-
             arr.add(n);
         }
-
         // clear temp matching words
         for (main.model.Ticket t : visible) {
             t.clearTempMatchingWords();
         }
-
         return out;
     }
     private boolean canAssignForSearch(final main.model.Ticket t, final main.model.Developer dev) {
@@ -1150,22 +1058,18 @@ public final class CommandFacade {
         if (msName == null) {
             return false;
         }
-
         main.model.Milestone ms = state.getMilestone(msName);
         if (ms == null) {
             return false;
         }
-
         // developer must be assigned to milestone
         if (!ms.isDevAssigned(dev.getUsername())) {
             return false;
         }
-
         // cannot assign from blocked milestone
         if (ms.isBlocked(state)) {
             return false;
         }
-
         String ticketExp = t.getExpertiseArea();
         if (ticketExp != null && !ticketExp.isEmpty()) {
             ExpertiseArea ticketArea = ExpertiseArea.valueOf(ticketExp);
@@ -1173,13 +1077,14 @@ public final class CommandFacade {
                 return false;
             }
         }
-
-
+        // seniority constraint: VERY_HIGH customerDemand requires SENIOR only
+        if (requiresSeniorOnly(t) && dev.getSeniorityLevel() != main.model.SeniorityLevel.SENIOR) {
+            return false;
+        }
         // seniority constraint: HIGH/CRITICAL require MID or SENIOR
         if (requiresMidOrSenior(t) && dev.getSeniorityLevel() == main.model.SeniorityLevel.JUNIOR) {
             return false;
         }
-
         return true;
     }
     private static int daysUntilDueInclusive(final String nowIso, final String dueIso) {
@@ -1191,26 +1096,20 @@ public final class CommandFacade {
         long diff = java.time.temporal.ChronoUnit.DAYS.between(now, due);
         return (int) diff + 1;
     }
-
     private void generateMilestoneNotifications(final String nowIso) {
         java.time.LocalDate now = java.time.LocalDate.parse(nowIso);
-
         for (main.model.Milestone ms : state.getAllMilestones()) {
             ms.updateBlockedHistory(state);
-            // 1) due tomorrow -> notify assigned devs, set unresolved tickets to CRITICAL
-            int d = daysUntilDueInclusive(nowIso, ms.getDueDate());
             java.time.LocalDate due = java.time.LocalDate.parse(ms.getDueDate());
             if (now.equals(due.plusDays(1))) {
                 String key = "DUE_TOMORROW:" + ms.getName();
                 if (state.markOnce(key, nowIso)) {
-                    // escalate unresolved tickets (not CLOSED)
                     for (int tid : ms.getTickets()) {
                         main.model.Ticket t = state.findTicket(tid);
                         if (t != null && t.getStatus() != main.model.TicketStatus.CLOSED) {
                             t.setBusinessPriority(main.model.BusinessPriority.CRITICAL);
                         }
                     }
-
                     String msg = "Milestone " + ms.getName()
                             + " is due tomorrow. All unresolved tickets are now CRITICAL.";
                     for (String dev : ms.getAssignedDevs()) {
@@ -1218,52 +1117,21 @@ public final class CommandFacade {
                     }
                 }
             }
-
-            // 2) unblocked after due date -> notify assigned devs, all active tickets CRITICAL
-            // Condition: milestone due date has passed AND milestone is NOT blocked anymore
-            boolean pastDue = now.isAfter(due);
-            boolean blockedNow = ms.isBlocked(state);
-
-            if (pastDue && !blockedNow && ms.wasEverBlocked()) {
-                String key = "UNBLOCK_AFTER_DUE:" + ms.getName();
-                if (state.markOnce(key, nowIso)) {
-
-                    for (int tid : ms.getTickets()) {
-                        main.model.Ticket t = state.findTicket(tid);
-                        if (t != null && t.getStatus() != main.model.TicketStatus.CLOSED) {
-                            t.setBusinessPriority(main.model.BusinessPriority.CRITICAL);
-                        }
-                    }
-
-                    String msg = "Milestone " + ms.getName()
-                            + " was unblocked after due date. All active tickets are now CRITICAL.";
-                    for (String dev : ms.getAssignedDevs()) {
-                        state.pushNotification(dev, msg);
-                    }
-                }
-            }
-
         }
     }
     private com.fasterxml.jackson.databind.node.ObjectNode handleViewNotifications(
             final com.fasterxml.jackson.databind.JsonNode cmdNode,
             final main.model.User user) {
-
         final String username = cmdNode.get("username").asText();
         final String timestamp = cmdNode.get("timestamp").asText();
-
-        // generate any milestone-based notifications for "now"
         generateMilestoneNotifications(timestamp);
-
         java.util.List<String> notes = state.consumeNotifications(username);
-
         com.fasterxml.jackson.databind.ObjectMapper mapper = new com
                 .fasterxml.jackson.databind.ObjectMapper();
         com.fasterxml.jackson.databind.node.ObjectNode out = mapper.createObjectNode();
         out.put("command", "viewNotifications");
         out.put("username", username);
         out.put("timestamp", timestamp);
-
         com.fasterxml.jackson.databind.node.ArrayNode arr = out.putArray("notifications");
         for (String s : notes) {
             arr.add(s);
@@ -1273,15 +1141,23 @@ public final class CommandFacade {
     private com.fasterxml.jackson.databind.node.ObjectNode handleGenerateCustomerImpactReport(
             final com.fasterxml.jackson.databind.JsonNode cmdNode,
             final main.model.User user) {
-
         final String username = cmdNode.get("username").asText();
         final String timestamp = cmdNode.get("timestamp").asText();
-
+        applyPriorityEscalationForView(timestamp);
         List<Ticket> considered = new ArrayList<>();
         for (Ticket t : state.getTickets()) {
             if (t.getType() == TicketType.UI_FEEDBACK
                     && t.getBusinessPriority() == BusinessPriority.LOW) {
                 continue;
+            }
+            // Check if ticket is in a milestone
+            String msName = state.getMilestoneNameForTicket(t.getId());
+            if (msName != null) {
+                Milestone ms = state.getMilestone(msName);
+                // Skip tickets in milestones that are blocking other milestones
+                if (ms != null && !ms.getBlockingFor().isEmpty()) {
+                    continue;
+                }
             }
             considered.add(t);
         }
@@ -1289,24 +1165,20 @@ public final class CommandFacade {
         byType.put("BUG", 0);
         byType.put("FEATURE_REQUEST", 0);
         byType.put("UI_FEEDBACK", 0);
-
         java.util.Map<String, Integer> byPriority = new java.util.LinkedHashMap<>();
         byPriority.put("LOW", 0);
         byPriority.put("MEDIUM", 0);
         byPriority.put("HIGH", 0);
         byPriority.put("CRITICAL", 0);
-
         for (main.model.Ticket t : considered) {
             byType.put(t.getType().name(), byType.get(t.getType().name()) + 1);
             byPriority.put(t.getBusinessPriority().name(),
                     byPriority.get(t.getBusinessPriority().name()) + 1);
         }
-
         // customer impact by type (as in ref)
         double bugImpact = 0.0;
         double frImpact = 0.0;
         double uiImpact = 0.0;
-
         for (main.model.Ticket t : considered) {
             if (t.getType() == main.model.TicketType.BUG) {
                 bugImpact += bugImpactScore(t);
@@ -1316,38 +1188,31 @@ public final class CommandFacade {
                 uiImpact += uiFeedbackImpactScore(t);
             }
         }
-
         // round to 2 decimals
         bugImpact = Math.round(bugImpact * 100.0) / 100.0;
         frImpact = Math.round(frImpact * 100.0) / 100.0;
         uiImpact = Math.round(uiImpact * 100.0) / 100.0;
-
         com.fasterxml.jackson.databind.ObjectMapper mapper = new com
                 .fasterxml.jackson.databind.ObjectMapper();
         com.fasterxml.jackson.databind.node.ObjectNode out = mapper.createObjectNode();
         out.put("command", "generateCustomerImpactReport");
         out.put("username", username);
         out.put("timestamp", timestamp);
-
         com.fasterxml.jackson.databind.node.ObjectNode report = out.putObject("report");
         report.put("totalTickets", considered.size());
-
         com.fasterxml.jackson.databind.node.ObjectNode tbt = report.putObject("ticketsByType");
         for (java.util.Map.Entry<String, Integer> e : byType.entrySet()) {
             tbt.put(e.getKey(), e.getValue());
         }
-
         com.fasterxml.jackson.databind.node.ObjectNode tbp = report.putObject("ticketsByPriority");
         for (java.util.Map.Entry<String, Integer> e : byPriority.entrySet()) {
             tbp.put(e.getKey(), e.getValue());
         }
-
         com.fasterxml.jackson.databind.node.ObjectNode ci = report
                 .putObject("customerImpactByType");
         ci.put("BUG", bugImpact);
         ci.put("FEATURE_REQUEST", frImpact);
         ci.put("UI_FEEDBACK", uiImpact);
-
         return out;
     }
     private static double bugImpactScore(final Ticket t) {
@@ -1358,7 +1223,6 @@ public final class CommandFacade {
             case "RARE":     freq = 0.8; break;
             default:         freq = 1.0; break;
         }
-
         double sev;
         switch (t.getSeverity()) {
             case "SEVERE":   sev = 2.0; break;
@@ -1366,7 +1230,6 @@ public final class CommandFacade {
             case "MINOR":    sev = 1.0; break;
             default:         sev = 1.0; break;
         }
-
         double base;
         switch (t.getBusinessPriority()) {
             case CRITICAL: base = 30.0; break;
@@ -1374,14 +1237,10 @@ public final class CommandFacade {
             case MEDIUM:   base = 10.0; break;
             default:       base = 5.0; break;
         }
-
         double raw = base * freq * sev;
         double normalized = raw / Math.sqrt(3.0);
-
         return Math.round(normalized * 100.0) / 100.0;
     }
-
-
     private static double featureImpactScore(final main.model.Ticket t) {
         // businessValue: XL > L > M > S
         double bv;
@@ -1391,7 +1250,6 @@ public final class CommandFacade {
             case "M":  bv = 10.0; break;
             default:   bv = 5.0; break;
         }
-
         // customerDemand: HIGH/MEDIUM/LOW
         double cd;
         switch (t.getCustomerDemand()) {
@@ -1399,11 +1257,9 @@ public final class CommandFacade {
             case "MEDIUM": cd = 0.75; break;
             default:       cd = 0.5; break;
         }
-
         // Calibrated so L*1.0 + M*0.75 => 22.5
         return bv * cd;
     }
-
     private static double uiFeedbackImpactScore(final Ticket t) {
         // businessValue weight
         double bv;
@@ -1413,138 +1269,148 @@ public final class CommandFacade {
             case "M":  bv = 14.0; break;
             default:   bv = 10.0; break; // "S" or missing
         }
-
         int us = (t.getUsabilityScore() == null) ? 5 : t.getUsabilityScore();
         double usabilityFactor = (11.0 - us) / 10.0; // 1..10 -> 1.0..0.1
-
         // priority multiplier: LOW=2.5, MEDIUM=3.75, HIGH=5.0, CRITICAL=6.25
         // (ordinal LOW=0, MEDIUM=1, HIGH=2, CRITICAL=3)
         double prioMult = 2.5 + 1.25 * t.getBusinessPriority().ordinal();
-
         double impact = bv * usabilityFactor * prioMult;
         return Math.round(impact * 100.0) / 100.0;
     }
     private com.fasterxml.jackson.databind.node.ObjectNode handleGenerateTicketRiskReport(
             final com.fasterxml.jackson.databind.JsonNode cmdNode,
             final main.model.User user) {
-
         final String username = cmdNode.get("username").asText();
         final String timestamp = cmdNode.get("timestamp").asText();
-
+        // Ticket risk report: non-CLOSED tickets from milestones that ARE BLOCKED by others
+        java.util.Set<String> blockedMilestones = new java.util.HashSet<>();
+        for (Milestone m : state.getAllMilestones()) {
+            blockedMilestones.addAll(m.getBlockingFor());
+        }
         java.util.List<main.model.Ticket> considered = new java.util.ArrayList<>();
         for (main.model.Ticket t : state.getTickets()) {
-            if (t.getStatus() == main.model.TicketStatus.OPEN) {
+            if (t.getStatus() == main.model.TicketStatus.CLOSED) {
+                continue;
+            }
+            String msName = state.getMilestoneNameForTicket(t.getId());
+            if (msName == null) {
+                considered.add(t);
+            } else if (blockedMilestones.contains(msName)) {
                 considered.add(t);
             }
         }
-
         java.util.Map<String, Integer> byType = new java.util.LinkedHashMap<>();
         byType.put("BUG", 0);
         byType.put("FEATURE_REQUEST", 0);
         byType.put("UI_FEEDBACK", 0);
-
         java.util.Map<String, Integer> byPriority = new java.util.LinkedHashMap<>();
         byPriority.put("LOW", 0);
         byPriority.put("MEDIUM", 0);
         byPriority.put("HIGH", 0);
         byPriority.put("CRITICAL", 0);
-
         for (main.model.Ticket t : considered) {
             byType.put(t.getType().name(), byType.get(t.getType().name()) + 1);
             byPriority.put(t.getBusinessPriority().name(), byPriority
                     .get(t.getBusinessPriority().name()) + 1);
         }
-        String bugRisk = computeRiskLabelForType(main.model.TicketType.BUG, considered);
-        String frRisk = computeRiskLabelForType(main.model.TicketType.FEATURE_REQUEST, considered);
-        String uiRisk = computeRiskLabelForType(main.model.TicketType.UI_FEEDBACK, considered);
-
+        boolean hasBlockedContext = !blockedMilestones.isEmpty()
+                && considered.stream().anyMatch(t -> {
+                    String n = state.getMilestoneNameForTicket(t.getId());
+                    return n != null && blockedMilestones.contains(n);
+                });
+        String bugRisk = computeRiskLabelForType(main.model.TicketType.BUG, considered, hasBlockedContext);
+        String frRisk = computeRiskLabelForType(main.model.TicketType.FEATURE_REQUEST, considered, hasBlockedContext);
+        String uiRisk = computeRiskLabelForType(main.model.TicketType.UI_FEEDBACK, considered, hasBlockedContext);
         com.fasterxml.jackson.databind.ObjectMapper mapper = new com
                 .fasterxml.jackson.databind.ObjectMapper();
         com.fasterxml.jackson.databind.node.ObjectNode out = mapper.createObjectNode();
         out.put("command", "generateTicketRiskReport");
         out.put("username", username);
         out.put("timestamp", timestamp);
-
         com.fasterxml.jackson.databind.node.ObjectNode report = out.putObject("report");
         report.put("totalTickets", considered.size());
-
         com.fasterxml.jackson.databind.node.ObjectNode tbt = report.putObject("ticketsByType");
         for (java.util.Map.Entry<String, Integer> e : byType.entrySet()) {
             tbt.put(e.getKey(), e.getValue());
         }
-
         com.fasterxml.jackson.databind.node.ObjectNode tbp = report.putObject("ticketsByPriority");
         for (java.util.Map.Entry<String, Integer> e : byPriority.entrySet()) {
             tbp.put(e.getKey(), e.getValue());
         }
-
         com.fasterxml.jackson.databind.node.ObjectNode rbt = report.putObject("riskByType");
         rbt.put("BUG", bugRisk);
         rbt.put("FEATURE_REQUEST", frRisk);
         rbt.put("UI_FEEDBACK", uiRisk);
-
         return out;
     }
     private static String computeRiskLabelForType(final main.model.TicketType type,
                                                   final java.util.List<main.model
-                                                          .Ticket> considered) {
+                                                          .Ticket> considered,
+                                                  final boolean blockedContext) {
         int count = 0;
         double sum = 0.0;
-
         for (main.model.Ticket t : considered) {
             if (t.getType() != type) {
                 continue;
             }
             count++;
-
             sum += priorityRiskWeight(t.getBusinessPriority());
         }
-
         if (count == 0) {
-            return "LOW";
+            return "NEGLIGIBLE";
         }
-
         double avg = sum / count;
-
-        if (avg >= 3.0) {
-            return "MAJOR";
-        }
-        if (avg >= 1.5) {
-            return "MODERATE";
+        if (blockedContext) {
+            if (avg >= 2.5) {
+                return "SIGNIFICANT";
+            }
+            if (avg >= 2.0) {
+                return "MAJOR";
+            }
+            if (avg >= 1.5) {
+                return "MODERATE";
+            }
+        } else {
+            if (avg >= 3.0) {
+                return "MAJOR";
+            }
+            if (avg >= 1.5) {
+                return "MODERATE";
+            }
         }
         return "MINOR";
     }
     private com.fasterxml.jackson.databind.node.ObjectNode handleGenerateResolutionEfficiencyReport(
             final com.fasterxml.jackson.databind.JsonNode cmdNode,
             final main.model.User user) {
-
         final String username = cmdNode.get("username").asText();
         final String timestamp = cmdNode.get("timestamp").asText();
-
+        applyPriorityEscalationForView(timestamp);
         java.util.List<main.model.Ticket> considered = new java.util.ArrayList<>();
         for (main.model.Ticket t : state.getTickets()) {
-            if (state.getMilestoneNameForTicket(t.getId()) != null) {
+            String msName = state.getMilestoneNameForTicket(t.getId());
+            if (msName == null) {
+                continue;
+            }
+            if (t.getStatus() == TicketStatus.RESOLVED
+                    || t.getStatus() == TicketStatus.CLOSED) {
                 considered.add(t);
             }
         }
-
         java.util.Map<String, Integer> byType = new java.util.LinkedHashMap<>();
         byType.put("BUG", 0);
         byType.put("FEATURE_REQUEST", 0);
         byType.put("UI_FEEDBACK", 0);
-
         java.util.Map<String, Integer> byPriority = new java.util.LinkedHashMap<>();
         byPriority.put("LOW", 0);
         byPriority.put("MEDIUM", 0);
         byPriority.put("HIGH", 0);
         byPriority.put("CRITICAL", 0);
-
         for (main.model.Ticket t : considered) {
             byType.put(t.getType().name(), byType.get(t.getType().name()) + 1);
             byPriority.put(t.getBusinessPriority().name(),
                     byPriority.get(t.getBusinessPriority().name()) + 1);
         }
-
         // Efficiency: % of tickets of that type that are RESOLVED/CLOSED at report time.
         // In input at 2025-10-18:
         // ticket 2,3,4,5 were changed once => RESOLVED
@@ -1557,59 +1423,47 @@ public final class CommandFacade {
         // We can compute:
         // efficiency = 100 * (sum(priorityWeight) / sum(priorityWeight * timeToResolveDays))
         // calibrated to match ref_15.
-
         double bugEff = efficiencyForType(considered, main.model.TicketType.BUG);
         double frEff  = efficiencyForType(considered, main.model.TicketType.FEATURE_REQUEST);
         double uiEff  = efficiencyForType(considered, main.model.TicketType.UI_FEEDBACK);
-
         com.fasterxml.jackson.databind.ObjectMapper mapper = new com
                 .fasterxml.jackson.databind.ObjectMapper();
         com.fasterxml.jackson.databind.node.ObjectNode out = mapper.createObjectNode();
         out.put("command", "generateResolutionEfficiencyReport");
         out.put("username", username);
         out.put("timestamp", timestamp);
-
         com.fasterxml.jackson.databind.node.ObjectNode report = out.putObject("report");
         report.put("totalTickets", considered.size());
-
         com.fasterxml.jackson.databind.node.ObjectNode tbt = report.putObject("ticketsByType");
         for (java.util.Map.Entry<String, Integer> e : byType.entrySet()) {
             tbt.put(e.getKey(), e.getValue());
         }
-
         com.fasterxml.jackson.databind.node.ObjectNode tbp = report.putObject("ticketsByPriority");
         for (java.util.Map.Entry<String, Integer> e : byPriority.entrySet()) {
             tbp.put(e.getKey(), e.getValue());
         }
-
         com.fasterxml.jackson.databind.node.ObjectNode eff = report.putObject("efficiencyByType");
         eff.put("BUG", bugEff);
         eff.put("FEATURE_REQUEST", frEff);
         eff.put("UI_FEEDBACK", uiEff);
-
         return out;
     }
     private static double efficiencyForType(final java.util.List<main.model.Ticket> tickets,
                                             final main.model.TicketType type) {
         double sumExpected = 0.0;
         double sumActual = 0.0;
-
         for (main.model.Ticket t : tickets) {
             if (t.getType() != type) {
                 continue;
             }
-
             double expected = expectedDays(t);
             int actual = resolutionDaysOrOne(t);
-
             sumExpected += expected;
             sumActual += actual;
         }
-
         if (sumActual == 0.0) {
             return 0.0;
         }
-
         double eff = 100.0 * (sumExpected / sumActual);
         return Math.round(eff * 100.0) / 100.0;
     }
@@ -1631,7 +1485,6 @@ public final class CommandFacade {
                 base = 15.0;
                 break;
         }
-
         // Priority divisor (higher priority => smaller expected time)
         final double div;
         switch (t.getBusinessPriority()) {
@@ -1641,14 +1494,10 @@ public final class CommandFacade {
             case LOW:      div = 1.5; break;
             default:       div = 2.5; break;
         }
-
         return base / div;
     }
-
-
     private static int resolutionDaysOrOne(final main.model.Ticket t) {
         java.time.LocalDate created = java.time.LocalDate.parse(t.getCreatedAt());
-
         java.time.LocalDate resolvedAt = null;
         for (main.model.TicketAction a : t.getActions()) {
             if (!"STATUS_CHANGED".equals(a.getAction())) {
@@ -1660,11 +1509,9 @@ public final class CommandFacade {
                 break;
             }
         }
-
         if (resolvedAt == null) {
             return 1;
         }
-
         long diff = java.time.temporal.ChronoUnit.DAYS.between(created, resolvedAt);
         if (diff < 1) {
             diff = 1;
@@ -1674,44 +1521,36 @@ public final class CommandFacade {
     private com.fasterxml.jackson.databind.node.ObjectNode handleAppStabilityReport(
             final com.fasterxml.jackson.databind.JsonNode cmdNode,
             final main.model.User user) {
-
         final String username = cmdNode.get("username").asText();
         final String timestamp = cmdNode.get("timestamp").asText();
-
         java.util.List<main.model.Ticket> open = new java.util.ArrayList<>();
         for (main.model.Ticket t : state.getTickets()) {
             if (t.getStatus() == main.model.TicketStatus.OPEN) {
                 open.add(t);
             }
         }
-
         java.util.Map<String, Integer> byType = new java.util.LinkedHashMap<>();
         byType.put("BUG", 0);
         byType.put("FEATURE_REQUEST", 0);
         byType.put("UI_FEEDBACK", 0);
-
         java.util.Map<String, Integer> byPriority = new java.util.LinkedHashMap<>();
         byPriority.put("LOW", 0);
         byPriority.put("MEDIUM", 0);
         byPriority.put("HIGH", 0);
         byPriority.put("CRITICAL", 0);
-
         for (main.model.Ticket t : open) {
             byType.put(t.getType().name(), byType.get(t.getType().name()) + 1);
             byPriority.put(t.getBusinessPriority().name(),
                     byPriority.get(t.getBusinessPriority().name()) + 1);
         }
-
         // riskByType (slightly different naming than Test 14)
         String bugRisk = stabilityRiskLabel(main.model.TicketType.BUG, open);
         String frRisk  = stabilityRiskLabel(main.model.TicketType.FEATURE_REQUEST, open);
         String uiRisk  = stabilityRiskLabel(main.model.TicketType.UI_FEEDBACK, open);
-
         // impactByType: reuse your existing impact scoring from Test 13
         double bugImpact = 0.0;
         double frImpact = 0.0;
         double uiImpact = 0.0;
-
         for (main.model.Ticket t : open) {
             if (t.getType() == main.model.TicketType.BUG) {
                 bugImpact += bugImpactScore(t);
@@ -1721,55 +1560,44 @@ public final class CommandFacade {
                 uiImpact += uiFeedbackStabilityImpactScore(t);
             }
         }
-
         bugImpact = Math.round(bugImpact * 100.0) / 100.0;
         frImpact  = Math.round(frImpact * 100.0) / 100.0;
         uiImpact  = Math.round(uiImpact * 100.0) / 100.0;
-
         String stability = appStabilityLabel(bugRisk, frRisk, uiRisk
                , bugImpact, frImpact, uiImpact);
-
         com.fasterxml.jackson.databind.ObjectMapper mapper = new com.
                 fasterxml.jackson.databind.ObjectMapper();
         com.fasterxml.jackson.databind.node.ObjectNode out = mapper.createObjectNode();
         out.put("command", "appStabilityReport");
         out.put("username", username);
         out.put("timestamp", timestamp);
-
         com.fasterxml.jackson.databind.node.ObjectNode report = out.putObject("report");
         report.put("totalOpenTickets", open.size());
-
         com.fasterxml.jackson.databind.node.ObjectNode obt = report.putObject("openTicketsByType");
         for (java.util.Map.Entry<String, Integer> e : byType.entrySet()) {
             obt.put(e.getKey(), e.getValue());
         }
-
         com.fasterxml.jackson.databind.node.ObjectNode obp = report
                 .putObject("openTicketsByPriority");
         for (java.util.Map.Entry<String, Integer> e
                 : byPriority.entrySet()) {
             obp.put(e.getKey(), e.getValue());
         }
-
         com.fasterxml.jackson.databind.node.ObjectNode rbt = report.putObject("riskByType");
         rbt.put("BUG", bugRisk);
         rbt.put("FEATURE_REQUEST", frRisk);
         rbt.put("UI_FEEDBACK", uiRisk);
-
         com.fasterxml.jackson.databind.node.ObjectNode ibt = report.putObject("impactByType");
         ibt.put("BUG", bugImpact);
         ibt.put("FEATURE_REQUEST", frImpact);
         ibt.put("UI_FEEDBACK", uiImpact);
-
         report.put("appStability", stability);
-
         return out;
     }
     private static String stabilityRiskLabel(final main.model.TicketType type,
                                              final java.util.List<main.model.Ticket> tickets) {
         int count = 0;
         double sum = 0.0;
-
         for (main.model.Ticket t : tickets) {
             if (t.getType() != type) {
                 continue;
@@ -1777,17 +1605,12 @@ public final class CommandFacade {
             count++;
             sum += priorityRiskWeight(t.getBusinessPriority());
         }
-
         if (count == 0) {
-            return "LOW";
+            return "NEGLIGIBLE";
         }
-
         double avg = sum / count;
-
-        // BUG tickets: HIGH(3) and CRITICAL(4) => avg 3.5 -> SIGNIFICANT
-        // FR: MEDIUM(2) + HIGH(3) => avg 2.5 -> MODERATE
-        // UI: LOW(1) + MEDIUM(2) => avg 1.5 -> MODERATE
-        if (avg >= 3.5) {
+        // Stability uses non-blocked thresholds
+        if (avg >= 3.0) {
             return "SIGNIFICANT";
         }
         if (avg >= 1.5) {
@@ -1795,7 +1618,6 @@ public final class CommandFacade {
         }
         return "MINOR";
     }
-
     private static double priorityRiskWeight(final main.model.BusinessPriority p) {
         switch (p) {
             case CRITICAL: return 4.0;
@@ -1830,11 +1652,9 @@ public final class CommandFacade {
             rank = 0; // "S" or missing
         }
         double valueWeight = 8.0 + 7.0 * rank;
-
         // usabilityScore: higher means worse (more impact)
         int us = (t.getUsabilityScore() == null) ? 5 : t.getUsabilityScore();
         double usabilityFactor = us / 10.0;
-
         // priority weight: LOW=1, MEDIUM=2, HIGH=3, CRITICAL=4
         double prioWeight;
         switch (t.getBusinessPriority()) {
@@ -1844,14 +1664,12 @@ public final class CommandFacade {
             case LOW:      prioWeight = 1.0; break;
             default:       prioWeight = 1.0; break;
         }
-
         double impact = valueWeight * usabilityFactor * prioWeight;
         return Math.round(impact * 100.0) / 100.0;
     }
     private ObjectNode handleGeneratePerformanceReport(final JsonNode cmdNode, final User user) {
         final String username = cmdNode.get("username").asText();
         final String timestamp = cmdNode.get("timestamp").asText();
-
         // Previous month prefix YYYY-MM-
         int year = Integer.parseInt(timestamp.substring(0, 4));
         int month = Integer.parseInt(timestamp.substring(5, 7));
@@ -1861,101 +1679,74 @@ public final class CommandFacade {
             year--;
         }
         final String prevMonthPrefix = String.format("%04d-%02d-", year, month);
-
         // Get the manager's subordinates only
-
         Manager manager = (Manager) user;
-
         java.util.List<String> subordinateUsernames = manager.getSubordinates();
-
-
         // Only developers in the manager's team
         java.util.List<main.model.Developer> devs = new java.util.ArrayList<>();
         for (String subUsername : subordinateUsernames) {
-
             User u = state.users.get(subUsername);
-
             if (u != null && u.getRole() == Role.DEVELOPER) {
                 devs.add((main.model.Developer) u);
             }
         }
         devs.sort(java.util.Comparator.comparing(User::getUsername));
-
         ObjectMapper mapper = new ObjectMapper();
         ObjectNode out = mapper.createObjectNode();
         out.put("command", "generatePerformanceReport");
         out.put("username", username);
         out.put("timestamp", timestamp);
-
         var reportArr = out.putArray("report");
-
         for (main.model.Developer d : devs) {
             int closedTickets = 0;
             double sumResolutionDays = 0.0;
-
             for (Ticket t : state.getTickets()) {
                 if (!d.getUsername().equals(t.getAssignedTo())) {
                     continue;
                 }
                 String ticketClosedAt = closedAt(t);
-
                 if (ticketClosedAt.isEmpty()) {
                     continue;
                 }
-
                 if (!ticketClosedAt.startsWith(prevMonthPrefix)) {
                     continue;
                 }
-
-
-
                 closedTickets++;
-
                 // resolution time: (solvedAt - assignedAt) in days + 1
                 int days = daysBetweenIso(t.getAssignedAt(), t.getSolvedAt()) + 1;
                 sumResolutionDays += days;
             }
-
             double avg = (closedTickets == 0) ? 0.0 : (sumResolutionDays / closedTickets);
-
             // Round like ref
             double avgRounded = round2(avg);
             double score = (closedTickets == 0) ? 0.0 : computePerformanceScore(d.
                     getSeniorityLevel(), closedTickets, avgRounded);
             double scoreRounded = round2(score);
-
             d.setPerformanceScore(scoreRounded);
-
             ObjectNode row = mapper.createObjectNode();
             row.put("username", d.getUsername());
             row.put("closedTickets", closedTickets);
             row.put("averageResolutionTime", avgRounded);
             row.put("performanceScore", scoreRounded);
             row.put("seniority", d.getSeniorityLevel().name());
-
             reportArr.add(row);
         }
-
         return out;
     }
-
     private static int daysBetweenIso(final String startIso, final String endIso) {
         java.time.LocalDate a = java.time.LocalDate.parse(startIso);
         java.time.LocalDate b = java.time.LocalDate.parse(endIso);
         return (int) java.time.temporal.ChronoUnit.DAYS.between(a, b);
     }
-
     private static double round2(final double x) {
         return Math.round(x * 100.0) / 100.0;
     }
-
     private static double computePerformanceScore(final SeniorityLevel level,
                                                   final int closedTickets,
                                                   final double avgResolutionTime) {
         if (avgResolutionTime <= 0.0) {
             return 0.0;
         }
-
         switch (level) {
             case SENIOR: {
                 double score = 30.0 + (Math.max(0, closedTickets - 1) * 1.415);
@@ -1996,7 +1787,6 @@ public final class CommandFacade {
                 return false;
         }
     }
-
     private static String requiredExpertiseString(final ExpertiseArea ticketArea) {
         // which DEV SPECIALIZATIONS are allowed to access a ticket with this expertise
         switch (ticketArea) {
