@@ -3,7 +3,6 @@ package main.core;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import main.model.Milestone;
 import main.model.Ticket;
 
 import java.util.List;
@@ -20,7 +19,8 @@ public final class OutputBuilder {
         root.put("timestamp", timestamp);
     }
 
-    public static OutputBuilder start(final String command, final String username, final String timestamp) {
+    public static OutputBuilder start(final String command, final String username,
+                                      final String timestamp) {
         return new OutputBuilder(command, username, timestamp);
     }
 

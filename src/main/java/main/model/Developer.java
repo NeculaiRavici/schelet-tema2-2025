@@ -1,6 +1,7 @@
 package main.model;
 
 import lombok.Getter;
+import lombok.Setter;
 
 public final class Developer extends User {
     private final ExpertiseArea expertiseArea;
@@ -11,14 +12,16 @@ public final class Developer extends User {
 
     @Getter
     private final String managerUsername;
-
+    @Getter
+    @Setter
+    private double performanceScore = 0.0;
     public Developer(final String username,
                      final String email,
                      final ExpertiseArea expertiseArea,
                      final SeniorityLevel seniorityLevel,
                      final String hireDate,
                      final String managerUsername) {
-        super(username, email, Role.DEVELOPER);
+        super(username, Role.DEVELOPER);
         this.expertiseArea = expertiseArea;
         this.seniorityLevel = seniorityLevel;
         this.hireDate = hireDate;

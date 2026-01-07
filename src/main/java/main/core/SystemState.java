@@ -1,14 +1,16 @@
 package main.core;
 
 import lombok.Getter;
-import lombok.Setter;
 import main.model.Milestone;
 import main.model.Ticket;
 import main.model.User;
 
 import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 public final class SystemState {
     private static final SystemState INSTANCE = new SystemState();
@@ -135,15 +137,10 @@ public final class SystemState {
     }
 
     public boolean markOnce(final String key, final String dateIso) {
-        String prev = lastNotificationDate.get(key);
-        if (dateIso.equals(prev)) {
+        if (lastNotificationDate.containsKey(key)) {
             return false;
         }
         lastNotificationDate.put(key, dateIso);
         return true;
     }
-    public boolean silentMode = false;
-    public void setSilentMode(boolean v) { silentMode = v; }
-    public boolean isSilentMode() { return silentMode; }
-
 }

@@ -18,7 +18,8 @@ public final class TicketAction {
     @Getter
     private final String to;         // only for STATUS_CHANGED
 
-    private TicketAction(String action, String by, String timestamp, String milestone, String from, String to) {
+    private TicketAction(final String action, final String by, final String timestamp,
+                         final String milestone, final String from, final String to) {
         this.action = action;
         this.by = by;
         this.timestamp = timestamp;
@@ -27,15 +28,17 @@ public final class TicketAction {
         this.to = to;
     }
 
-    public static TicketAction addedToMilestone(String milestone, String by, String timestamp) {
+    public static TicketAction addedToMilestone(final String milestone, final String by,
+                                                final String timestamp) {
         return new TicketAction("ADDED_TO_MILESTONE", by, timestamp, milestone, null, null);
     }
 
-    public static TicketAction assigned(String by, String timestamp) {
+    public static TicketAction assigned(final String by, final String timestamp) {
         return new TicketAction("ASSIGNED", by, timestamp, null, null, null);
     }
 
-    public static TicketAction statusChanged(final String from, final String to, final String by, final String timestamp) {
+    public static TicketAction statusChanged(final String from, final String to,
+                                             final String by, final String timestamp) {
         return new TicketAction("STATUS_CHANGED", by, timestamp, null, from, to);
     }
 

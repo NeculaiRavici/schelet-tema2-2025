@@ -8,7 +8,7 @@ public final class Manager extends User {
     private final List<String> subordinates;
 
     public Manager(final String username, final String email, final List<String> subordinates) {
-        super(username, email, Role.MANAGER);
+        super(username, Role.MANAGER);
         this.subordinates = new ArrayList<>(subordinates);
     }
 
@@ -16,7 +16,4 @@ public final class Manager extends User {
         return Collections.unmodifiableList(subordinates);
     }
 
-    public boolean manages(final String devUsername) {
-        return subordinates.contains(devUsername);
-    }
 }

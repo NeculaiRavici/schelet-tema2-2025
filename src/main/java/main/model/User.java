@@ -2,12 +2,10 @@ package main.model;
 
 public class User {
     private final String username;
-    private final String email;
     private final Role role;
 
-    public User(final String username, final String email, final Role role) {
+    public User(final String username, final Role role) {
         this.username = username;
-        this.email = email;
         this.role = role;
     }
 
@@ -37,18 +35,21 @@ public class User {
 
         if (role == Role.DEVELOPER) {
             // robust field names
-            String expStr = node.has("expertiseArea") ? node.get("expertiseArea").asText() : "FULLSTACK";
-            String senStr = node.has("seniorityLevel") ? node.get("seniorityLevel").asText()
+            String expStr = node.has("expertiseArea") ? node
+                    .get("expertiseArea").asText() : "FULLSTACK";
+            String senStr = node.has("seniorityLevel") ? node
+                    .get("seniorityLevel").asText()
                     : (node.has("seniority") ? node.get("seniority").asText() : "MID");
 
             ExpertiseArea exp = ExpertiseArea.valueOf(expStr);
             SeniorityLevel sen = SeniorityLevel.valueOf(senStr);
-            String managerUsername = node.has("managerUsername") ? node.get("managerUsername").asText() : "";
+            String managerUsername = node.has("managerUsername")
+                    ? node.get("managerUsername").asText() : "";
             return new Developer(username, email, exp, sen, hireDate, managerUsername);
 
         }
 
-        return new User(username, email, role);
+        return new User(username, role);
     }
 
 }

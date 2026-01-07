@@ -19,7 +19,7 @@ import java.util.List;
  * App represents the main application logic that processes input commands,
  * generates outputs, and writes them to a file.
  */
-public class App {
+public final class App {
     private App() {
     }
 

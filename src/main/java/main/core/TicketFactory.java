@@ -13,7 +13,8 @@ public final class TicketFactory {
     public static Ticket createTicket(final int id, final String createdAt, final JsonNode params) {
         TicketType type = TicketType.valueOf(params.get("type").asText());
         String title = params.get("title").asText();
-        BusinessPriority priority = BusinessPriority.valueOf(params.get("businessPriority").asText());
+        BusinessPriority priority = BusinessPriority.valueOf(params.get("businessPriority")
+                                    .asText());
         String reportedBy = params.get("reportedBy").asText();
 
         // Anonymous rule (as in Test 1)
@@ -39,16 +40,22 @@ public final class TicketFactory {
             t.setExpertiseArea(exp.asText());
         }
         JsonNode freq = params.get("frequency");
-        if (freq != null && freq.isTextual()) t.setFrequency(freq.asText());
-
+        if (freq != null && freq.isTextual()) {
+            t.setFrequency(freq.asText());
+        }
         JsonNode bv = params.get("businessValue");
-        if (bv != null && bv.isTextual()) t.setBusinessValue(bv.asText());
-
+        if (bv != null && bv.isTextual()) {
+            t.setBusinessValue(bv.asText());
+        }
         JsonNode cd = params.get("customerDemand");
-        if (cd != null && cd.isTextual()) t.setCustomerDemand(cd.asText());
-
+        if (cd != null && cd.isTextual()) {
+            t.setCustomerDemand(cd.asText());
+        }
         JsonNode us = params.get("usabilityScore");
-        if (us != null && us.isInt()) t.setUsabilityScore(us.asInt());
+        if (us != null && us.isInt()) {
+            t.setUsabilityScore(us.asInt());
+        }
+
 
         return t;
     }
