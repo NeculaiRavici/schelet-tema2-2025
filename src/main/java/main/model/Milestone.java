@@ -42,6 +42,10 @@ public final class Milestone {
         return name;
     }
 
+    public List<String> getBlockingFor() {
+        return Collections.unmodifiableList(blockingFor);
+    }
+
     public String getDueDate() {
         return dueDate;
     }
