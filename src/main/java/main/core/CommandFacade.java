@@ -661,6 +661,7 @@ public final class CommandFacade {
 
         if (from == TicketStatus.IN_PROGRESS) {
             to = TicketStatus.RESOLVED;
+            t.setSolvedAt(timestamp);
         } else if (from == TicketStatus.RESOLVED) {
             to = TicketStatus.CLOSED;
         } else {
@@ -730,6 +731,10 @@ public final class CommandFacade {
         // If nothing to undo -> silent (not tested here, but safe)
         if (prev == null) {
             return null;
+        }
+
+        if (current == TicketStatus.RESOLVED && prev != TicketStatus.RESOLVED && prev != TicketStatus.CLOSED) {
+             t.setSolvedAt("");
         }
 
         t.setStatus(prev);
@@ -1618,10 +1623,16 @@ public final class CommandFacade {
         if (month == 0) { month = 12; year--; }
         final String prevMonthPrefix = String.format("%04d-%02d-", year, month);
 
-        // All developers in system (since Developer has no manager/team field)
+        if (user.getRole() != Role.MANAGER) {
+             return null;
+        }
+        main.model.Manager mgr = (main.model.Manager) user;
+        List<String> subs = mgr.getSubordinates();
+
         java.util.List<main.model.Developer> devs = new java.util.ArrayList<>();
-        for (User u : state.users.values()) { // or state.getUsers().values()
-            if (u.getRole() == Role.DEVELOPER) {
+        for (String subName : subs) {
+            User u = state.getUser(subName);
+            if (u != null && u.getRole() == Role.DEVELOPER) {
                 devs.add((main.model.Developer) u);
             }
         }
@@ -1641,27 +1652,26 @@ public final class CommandFacade {
 
             for (Ticket t : state.getTickets()) {
                 if (!d.getUsername().equals(t.getAssignedTo())) continue;
+                
+                if (t.getStatus() != TicketStatus.CLOSED) continue;
+
                 String resolvedAt = firstResolvedAt(t);
                 if (resolvedAt.isEmpty()) continue;
+                
                 if (!resolvedAt.startsWith(prevMonthPrefix)) continue;
-
-
-                // Only tickets closed in the previous month
-                if (!t.getSolvedAt().startsWith(prevMonthPrefix)) continue;
-
+                
                 closedTickets++;
 
-                // resolution time: (solvedAt - assignedAt) in days + 1
-                int days = daysBetweenIso(t.getAssignedAt(), t.getSolvedAt()) + 1;
+                int days = daysBetweenIso(t.getAssignedAt(), resolvedAt) + 1;
                 sumResolutionDays += days;
             }
 
             double avg = (closedTickets == 0) ? 0.0 : (sumResolutionDays / closedTickets);
-
-            double score = (closedTickets == 0) ? 0.0 : computePerformanceScore(d.getSeniorityLevel(), closedTickets, avg);
-
-            // Round like ref
+            
             double avgRounded = round2(avg);
+            
+            double score = (closedTickets == 0) ? 0.0 : computePerformanceScore(d.getSeniorityLevel(), closedTickets, avgRounded);
+
             double scoreRounded = round2(score);
 
             ObjectNode row = mapper.createObjectNode();
