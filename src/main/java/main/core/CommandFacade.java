@@ -672,7 +672,11 @@ public final class CommandFacade {
         t.pushStatusHistory(from);
         t.setStatus(to);
         t.addAction(TicketAction.statusChanged(from.name(), to.name(), username, timestamp));
+        if (to == TicketStatus.RESOLVED) {
 
+            t.setSolvedAt(timestamp);
+
+        }
         return null;
     }
     private ObjectNode handleViewTicketHistory(final JsonNode cmdNode, final User user) {
@@ -1618,10 +1622,20 @@ public final class CommandFacade {
         if (month == 0) { month = 12; year--; }
         final String prevMonthPrefix = String.format("%04d-%02d-", year, month);
 
-        // All developers in system (since Developer has no manager/team field)
+        // Get the manager's subordinates only
+
+        Manager manager = (Manager) user;
+
+        java.util.List<String> subordinateUsernames = manager.getSubordinates();
+
+
+        // Only developers in the manager's team
         java.util.List<main.model.Developer> devs = new java.util.ArrayList<>();
-        for (User u : state.users.values()) { // or state.getUsers().values()
-            if (u.getRole() == Role.DEVELOPER) {
+        for (String subUsername : subordinateUsernames) {
+
+            User u = state.users.get(subUsername);
+
+            if (u != null && u.getRole() == Role.DEVELOPER) {
                 devs.add((main.model.Developer) u);
             }
         }
@@ -1641,13 +1655,13 @@ public final class CommandFacade {
 
             for (Ticket t : state.getTickets()) {
                 if (!d.getUsername().equals(t.getAssignedTo())) continue;
-                String resolvedAt = firstResolvedAt(t);
-                if (resolvedAt.isEmpty()) continue;
-                if (!resolvedAt.startsWith(prevMonthPrefix)) continue;
+                String ticketClosedAt = closedAt(t);
+
+                if (ticketClosedAt.isEmpty()) continue;
+
+                if (!ticketClosedAt.startsWith(prevMonthPrefix)) continue;
 
 
-                // Only tickets closed in the previous month
-                if (!t.getSolvedAt().startsWith(prevMonthPrefix)) continue;
 
                 closedTickets++;
 
@@ -1658,10 +1672,9 @@ public final class CommandFacade {
 
             double avg = (closedTickets == 0) ? 0.0 : (sumResolutionDays / closedTickets);
 
-            double score = (closedTickets == 0) ? 0.0 : computePerformanceScore(d.getSeniorityLevel(), closedTickets, avg);
-
             // Round like ref
             double avgRounded = round2(avg);
+            double score = (closedTickets == 0) ? 0.0 : computePerformanceScore(d.getSeniorityLevel(), closedTickets, avgRounded);
             double scoreRounded = round2(score);
 
             ObjectNode row = mapper.createObjectNode();
@@ -1696,7 +1709,7 @@ public final class CommandFacade {
         final double w;
         switch (level) {
             case JUNIOR: w = 3.16; break;
-            case MID:    w = 7.75; break;
+            case MID:    w = 7.76; break;
             case SENIOR: w = 11.75; break;
             default:     w = 3.16; break;
         }
@@ -1752,5 +1765,21 @@ public final class CommandFacade {
         }
         return "";
     }
+    private static String closedAt(final Ticket t) {
 
+        for (TicketAction a : t.getActions()) {
+
+            if (!"STATUS_CHANGED".equals(a.getAction())) continue;
+
+            if ("CLOSED".equals(a.getTo())) {
+
+                return a.getTimestamp();
+
+            }
+
+        }
+
+        return "";
+
+    }
 }
