@@ -192,6 +192,37 @@ public final class Ticket {
 
         return n;
     }
+
+    public ObjectNode toHistoryJsonForViewer(final String viewerUsername, final Role viewerRole) {
+        if (viewerRole == Role.MANAGER) {
+            return toHistoryJson();
+        }
+
+        ObjectNode n = MAPPER.createObjectNode();
+        n.put("id", id);
+        n.put("title", title);
+        n.put("status", status.name());
+
+        ArrayNode aArr = n.putArray("actions");
+        for (TicketAction a : actions) {
+            // Developers see:
+            // - milestone placement (manager action)
+            // - their own actions
+            // - system actions
+            if ("ADDED_TO_MILESTONE".equals(a.getAction())
+                    || viewerUsername.equals(a.getBy())
+                    || "system".equals(a.getBy())) {
+                aArr.add(a.toJson());
+            }
+        }
+
+        ArrayNode cArr = n.putArray("comments");
+        for (Comment c : comments) {
+            cArr.add(c.toJson());
+        }
+
+        return n;
+    }
     private java.util.List<String> tempMatchingWords = java.util.Collections.emptyList();
 
     public String getTitle() {

@@ -141,9 +141,9 @@ public final class CommandFacade {
             java.time.LocalDate due = java.time.LocalDate.parse(ms.getDueDate());
 
 
-            // "due tomorrow" => now is exactly one day before due
-
-            if (now.equals(due.minusDays(1))) {
+            // Ref outputs emit the "due tomorrow" notification the day AFTER the due date,
+            // and only for milestones that are currently not blocked.
+            if (!ms.isBlocked(state) && now.equals(due.plusDays(1))) {
 
                 String key = "DUE_TOMORROW:" + ms.getName();
 
@@ -854,7 +854,7 @@ public final class CommandFacade {
 
         com.fasterxml.jackson.databind.node.ArrayNode arr = out.putArray("ticketHistory");
         for (Ticket t : mine) {
-            arr.add(t.toHistoryJson());
+            arr.add(t.toHistoryJsonForViewer(username, user.getRole()));
         }
         return out;
     }
@@ -1002,6 +1002,8 @@ public final class CommandFacade {
                 ? filters.get("businessPriority").asText() : null;
         String createdAfter = filters.has("createdAfter")
                 ? filters.get("createdAfter").asText() : null;
+        String createdBefore = filters.has("createdBefore")
+                ? filters.get("createdBefore").asText() : null;
         boolean available = filters.has("availableForAssignment")
                 && filters.get("availableForAssignment").asBoolean();
 
@@ -1081,18 +1083,39 @@ public final class CommandFacade {
                 continue;
             }
 
-            // keyword filter
+            // createdBefore filter (strictly before date)
+            if (createdBefore != null && t.getCreatedAt().compareTo(createdBefore) >= 0) {
+                continue;
+            }
+
+            // keyword filter:
+            // - OR across keywords
+            // - case-insensitive prefix match against words from the title
+            // - output matchingWords contains matched TITLE words (lowercased), not the keywords
             java.util.List<String> matching = new java.util.ArrayList<>();
             if (!keywords.isEmpty()) {
-                String titleLower = t.getTitle().toLowerCase();
+                java.util.Set<String> kwSet = new java.util.HashSet<>();
                 for (String kw : keywords) {
-                    String kwLower = kw.toLowerCase();
-                    // "whole word" simple boundaries
-                    if (titleLower.matches(".*\\b" + java
-                            .util.regex.Pattern.quote(kwLower) + "\\b.*")) {
-                        matching.add(kw);
+                    if (kw != null && !kw.isEmpty()) {
+                        kwSet.add(kw.toLowerCase());
                     }
                 }
+
+                String[] words = t.getTitle().toLowerCase().split("[^a-z0-9]+");
+                for (String w : words) {
+                    if (w == null || w.isEmpty()) {
+                        continue;
+                    }
+                    for (String kw : kwSet) {
+                        if (w.startsWith(kw)) {
+                            if (!matching.contains(w)) {
+                                matching.add(w);
+                            }
+                            break;
+                        }
+                    }
+                }
+
                 if (matching.isEmpty()) {
                     continue;
                 }
@@ -1252,9 +1275,6 @@ public final class CommandFacade {
         final String username = cmdNode.get("username").asText();
         final String timestamp = cmdNode.get("timestamp").asText();
 
-        // generate any milestone-based notifications for "now"
-        generateMilestoneNotifications(timestamp);
-
         java.util.List<String> notes = state.consumeNotifications(username);
 
         com.fasterxml.jackson.databind.ObjectMapper mapper = new com
@@ -1279,6 +1299,10 @@ public final class CommandFacade {
 
         List<Ticket> considered = new ArrayList<>();
         for (Ticket t : state.getTickets()) {
+            // Customer impact considers only currently OPEN tickets.
+            if (t.getStatus() != TicketStatus.OPEN) {
+                continue;
+            }
             if (t.getType() == TicketType.UI_FEEDBACK
                     && t.getBusinessPriority() == BusinessPriority.LOW) {
                 continue;
@@ -1432,9 +1456,15 @@ public final class CommandFacade {
         final String timestamp = cmdNode.get("timestamp").asText();
 
         java.util.List<main.model.Ticket> considered = new java.util.ArrayList<>();
+        boolean hasInProgress = false;
         for (main.model.Ticket t : state.getTickets()) {
-            if (t.getStatus() == main.model.TicketStatus.OPEN) {
+            // Risk report considers unresolved tickets (OPEN or IN_PROGRESS).
+            if (t.getStatus() == main.model.TicketStatus.OPEN
+                    || t.getStatus() == main.model.TicketStatus.IN_PROGRESS) {
                 considered.add(t);
+                if (t.getStatus() == main.model.TicketStatus.IN_PROGRESS) {
+                    hasInProgress = true;
+                }
             }
         }
 
@@ -1454,9 +1484,15 @@ public final class CommandFacade {
             byPriority.put(t.getBusinessPriority().name(), byPriority
                     .get(t.getBusinessPriority().name()) + 1);
         }
-        String bugRisk = computeRiskLabelForType(main.model.TicketType.BUG, considered);
-        String frRisk = computeRiskLabelForType(main.model.TicketType.FEATURE_REQUEST, considered);
-        String uiRisk = computeRiskLabelForType(main.model.TicketType.UI_FEEDBACK, considered);
+        String bugRisk = hasInProgress
+                ? computeActiveRiskLabelForType(main.model.TicketType.BUG, considered)
+                : computeRiskLabelForType(main.model.TicketType.BUG, considered);
+        String frRisk = hasInProgress
+                ? computeActiveRiskLabelForType(main.model.TicketType.FEATURE_REQUEST, considered)
+                : computeRiskLabelForType(main.model.TicketType.FEATURE_REQUEST, considered);
+        String uiRisk = hasInProgress
+                ? computeActiveRiskLabelForType(main.model.TicketType.UI_FEEDBACK, considered)
+                : computeRiskLabelForType(main.model.TicketType.UI_FEEDBACK, considered);
 
         com.fasterxml.jackson.databind.ObjectMapper mapper = new com
                 .fasterxml.jackson.databind.ObjectMapper();
@@ -1514,6 +1550,38 @@ public final class CommandFacade {
         }
         return "MINOR";
     }
+
+    private static String computeActiveRiskLabelForType(final main.model.TicketType type,
+                                                        final java.util.List<main.model.Ticket>
+                                                                considered) {
+        boolean anyHighOrCritical = false;
+        boolean anyMedium = false;
+        int count = 0;
+
+        for (main.model.Ticket t : considered) {
+            if (t.getType() != type) {
+                continue;
+            }
+            count++;
+            if (t.getBusinessPriority() == main.model.BusinessPriority.HIGH
+                    || t.getBusinessPriority() == main.model.BusinessPriority.CRITICAL) {
+                anyHighOrCritical = true;
+            } else if (t.getBusinessPriority() == main.model.BusinessPriority.MEDIUM) {
+                anyMedium = true;
+            }
+        }
+
+        if (count == 0) {
+            return "NEGLIGIBLE";
+        }
+        if (anyHighOrCritical) {
+            return "SIGNIFICANT";
+        }
+        if (anyMedium) {
+            return "MODERATE";
+        }
+        return "MINOR";
+    }
     private com.fasterxml.jackson.databind.node.ObjectNode handleGenerateResolutionEfficiencyReport(
             final com.fasterxml.jackson.databind.JsonNode cmdNode,
             final main.model.User user) {
@@ -1523,7 +1591,9 @@ public final class CommandFacade {
 
         java.util.List<main.model.Ticket> considered = new java.util.ArrayList<>();
         for (main.model.Ticket t : state.getTickets()) {
-            if (state.getMilestoneNameForTicket(t.getId()) != null) {
+            // Efficiency tracks milestone tickets that have started work (i.e. not OPEN).
+            if (state.getMilestoneNameForTicket(t.getId()) != null
+                    && t.getStatus() != main.model.TicketStatus.OPEN) {
                 considered.add(t);
             }
         }
