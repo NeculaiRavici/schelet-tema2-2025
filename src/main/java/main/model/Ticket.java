@@ -26,6 +26,10 @@ public final class Ticket {
     private String assignedAt = "";
     @Getter
     private String solvedAt = "";
+
+    public void setSolvedAt(final String solvedAt) {
+        this.solvedAt = solvedAt;
+    }
     private String assignedTo = "";
     private String reportedBy = "";
 
