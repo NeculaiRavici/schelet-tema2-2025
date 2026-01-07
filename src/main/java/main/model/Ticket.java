@@ -174,7 +174,18 @@ public final class Ticket {
         }
         return false;
     }
+    /**
+     * Full history with all actions (for managers).
+     */
     public ObjectNode toHistoryJson() {
+        return toHistoryJsonFiltered(null);
+    }
+
+    /**
+     * Filtered history showing only actions by the specified user
+     * (plus ADDED_TO_MILESTONE actions). If filterUser is null, show all.
+     */
+    public ObjectNode toHistoryJsonFiltered(final String filterUser) {
         ObjectNode n = MAPPER.createObjectNode();
         n.put("id", id);
         n.put("title", title);
@@ -182,7 +193,16 @@ public final class Ticket {
 
         ArrayNode aArr = n.putArray("actions");
         for (TicketAction a : actions) {
-            aArr.add(a.toJson());
+            if (filterUser == null) {
+                // Show all actions for managers
+                aArr.add(a.toJson());
+            } else {
+                // For developers, show ADDED_TO_MILESTONE and their own actions
+                if ("ADDED_TO_MILESTONE".equals(a.getAction())
+                        || filterUser.equals(a.getBy())) {
+                    aArr.add(a.toJson());
+                }
+            }
         }
 
         ArrayNode cArr = n.putArray("comments");

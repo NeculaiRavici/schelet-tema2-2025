@@ -58,6 +58,10 @@ public final class Milestone {
         return assignedDevs.contains(devUsername);
     }
 
+    public List<String> getBlockingFor() {
+        return new ArrayList<>(blockingFor);
+    }
+
     public boolean isActive(final SystemState state) {
         for (int id : tickets) {
             Ticket t = state.findTicket(id);
@@ -84,24 +88,80 @@ public final class Milestone {
         return false;
     }
 
-    private int daysUntilDue(final LocalDate now) {
+    private int daysUntilDue(final LocalDate now, final SystemState state) {
         LocalDate due = LocalDate.parse(dueDate);
+
+        // For completed milestones, use completion date instead of now
+        if (!isActive(state)) {
+            LocalDate completedAt = findCompletionDate(state);
+            if (completedAt != null) {
+                if (due.isBefore(completedAt)) {
+                    return 0;
+                }
+                long diff = ChronoUnit.DAYS.between(completedAt, due);
+                return (int) diff + 1;
+            }
+        }
+
         if (due.isBefore(now)) {
             return 0;
         }
-        // Inclusive-style counting to match ref:
-        // 2025-10-21 -> 2025-10-28 should produce 8, not 7
+        // Inclusive-style counting
         long diff = ChronoUnit.DAYS.between(now, due);
         return (int) diff + 1;
     }
 
-    private int overdueBy(final java.time.LocalDate now, final boolean isCompleted) {
+    private int overdueBy(final java.time.LocalDate now,
+                          final boolean isCompleted,
+                          final SystemState state) {
         java.time.LocalDate due = java.time.LocalDate.parse(dueDate);
+
+        // For completed milestones, calculate based on completion date
+        if (isCompleted) {
+            LocalDate completedAt = findCompletionDate(state);
+            if (completedAt != null && completedAt.isAfter(due)) {
+                long diff = java.time.temporal.ChronoUnit.DAYS.between(due, completedAt);
+                return (int) diff + 1;  // Inclusive counting
+            }
+            return 0;  // Completed on time
+        }
+
         if (!now.isAfter(due)) {
             return 0;
         }
         long diff = java.time.temporal.ChronoUnit.DAYS.between(due, now);
-        return isCompleted ? (int) diff : (int) diff + 1;
+        return (int) diff + 1;
+    }
+
+    /**
+     * Find the date when this milestone was completed (all tickets closed).
+     */
+    private LocalDate findCompletionDate(final SystemState state) {
+        LocalDate latestClose = null;
+        for (int tid : tickets) {
+            Ticket t = state.findTicket(tid);
+            if (t == null || t.getStatus() != TicketStatus.CLOSED) {
+                return null;  // Not all closed yet
+            }
+            // Find when this ticket was closed
+            String closedAt = findClosedAt(t);
+            if (closedAt != null && !closedAt.isEmpty()) {
+                LocalDate closeDate = LocalDate.parse(closedAt);
+                if (latestClose == null || closeDate.isAfter(latestClose)) {
+                    latestClose = closeDate;
+                }
+            }
+        }
+        return latestClose;
+    }
+
+    private static String findClosedAt(final Ticket t) {
+        for (TicketAction a : t.getActions()) {
+            if ("STATUS_CHANGED".equals(a.getAction()) && "CLOSED".equals(a.getTo())) {
+                return a.getTimestamp();
+            }
+        }
+        return "";
     }
 
     private List<Integer> openTickets(final SystemState state) {
@@ -172,8 +232,8 @@ public final class Milestone {
 
         n.put("isBlocked", isBlocked(state));
 
-        n.put("daysUntilDue", daysUntilDue(now));
-        n.put("overdueBy", overdueBy(now, completed));
+        n.put("daysUntilDue", daysUntilDue(now, state));
+        n.put("overdueBy", overdueBy(now, completed, state));
 
         List<Integer> open = openTickets(state);
         List<Integer> closed = closedTickets(state);
@@ -190,18 +250,34 @@ public final class Milestone {
 
         n.put("completionPercentage", completionPercentage(state));
 
-        ArrayNode rep = n.putArray("repartition");
+        // Build repartition with assigned tickets count for sorting
+        java.util.List<java.util.Map.Entry<String, java.util.List<Integer>>> repartitionList = new java.util.ArrayList<>();
         for (String dev : assignedDevs) {
-            ObjectNode r = MAPPER.createObjectNode();
-            r.put("developer", dev);
-
-            ArrayNode assigned = r.putArray("assignedTickets");
-            // In test 2 there are none, but implement correctly:
+            java.util.List<Integer> devTickets = new java.util.ArrayList<>();
             for (int tid : tickets) {
                 Ticket tt = state.findTicket(tid);
                 if (tt != null && dev.equals(tt.getAssignedTo())) {
-                    assigned.add(tid);
+                    devTickets.add(tid);
                 }
+            }
+            repartitionList.add(new java.util.AbstractMap.SimpleEntry<>(dev, devTickets));
+        }
+        
+        // Sort: by number of assigned tickets ascending, then by developer name alphabetically
+        repartitionList.sort((a, b) -> {
+            int cmp = Integer.compare(a.getValue().size(), b.getValue().size());
+            if (cmp != 0) return cmp;
+            return a.getKey().compareTo(b.getKey());
+        });
+
+        ArrayNode rep = n.putArray("repartition");
+        for (java.util.Map.Entry<String, java.util.List<Integer>> entry : repartitionList) {
+            ObjectNode r = MAPPER.createObjectNode();
+            r.put("developer", entry.getKey());
+
+            ArrayNode assigned = r.putArray("assignedTickets");
+            for (int tid : entry.getValue()) {
+                assigned.add(tid);
             }
             rep.add(r);
         }
@@ -217,8 +293,29 @@ public final class Milestone {
         }
     }
 
+    /**
+     * Check if this milestone was ever blocked by any other milestone.
+     * This includes milestones that have since been completed.
+     */
     public boolean wasEverBlocked() {
         return wasEverBlocked;
+    }
+    
+    /**
+     * Check if any other milestone ever listed this milestone in its blockingFor.
+     * This is independent of whether that milestone is still active.
+     */
+    public boolean hasBlockingMilestones(final SystemState state) {
+        for (Milestone other : state.getAllMilestones()) {
+            if (other == this) {
+                continue;
+            }
+            // If any milestone ever listed us in blockingFor, we were blocked at some point
+            if (other.blockingFor.contains(this.name)) {
+                return true;
+            }
+        }
+        return false;
     }
 
 }
