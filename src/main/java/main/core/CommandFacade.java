@@ -1618,10 +1618,15 @@ public final class CommandFacade {
         if (month == 0) { month = 12; year--; }
         final String prevMonthPrefix = String.format("%04d-%02d-", year, month);
 
-        // All developers in system (since Developer has no manager/team field)
+        // Get the manager's subordinates only
+        Manager manager = (Manager) user;
+        java.util.List<String> subordinateUsernames = manager.getSubordinates();
+
+        // Only developers in the manager's team
         java.util.List<main.model.Developer> devs = new java.util.ArrayList<>();
-        for (User u : state.users.values()) { // or state.getUsers().values()
-            if (u.getRole() == Role.DEVELOPER) {
+        for (String subUsername : subordinateUsernames) {
+            User u = state.users.get(subUsername);
+            if (u != null && u.getRole() == Role.DEVELOPER) {
                 devs.add((main.model.Developer) u);
             }
         }
