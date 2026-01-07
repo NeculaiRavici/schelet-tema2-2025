@@ -99,6 +99,10 @@ public final class Ticket {
         this.assignedTo = assignedTo;
     }
 
+    public void setSolvedAt(final String solvedAt) {
+        this.solvedAt = (solvedAt == null) ? "" : solvedAt;
+    }
+
     public List<Comment> getComments() {
         return comments;
     }

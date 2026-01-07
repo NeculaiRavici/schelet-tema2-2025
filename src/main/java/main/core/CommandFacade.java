@@ -671,6 +671,9 @@ public final class CommandFacade {
 // before t.setStatus(to);
         t.pushStatusHistory(from);
         t.setStatus(to);
+        if (to == TicketStatus.RESOLVED) {
+            t.setSolvedAt(timestamp);
+        }
         t.addAction(TicketAction.statusChanged(from.name(), to.name(), username, timestamp));
 
         return null;
@@ -733,6 +736,10 @@ public final class CommandFacade {
         }
 
         t.setStatus(prev);
+        // If we revert RESOLVED -> IN_PROGRESS, the ticket is no longer "solved"
+        if (current == TicketStatus.RESOLVED && prev == TicketStatus.IN_PROGRESS) {
+            t.setSolvedAt("");
+        }
         t.addAction(TicketAction.statusChanged(current.name(), prev.name(), username, timestamp));
         return null;
     }
@@ -1618,14 +1625,18 @@ public final class CommandFacade {
         if (month == 0) { month = 12; year--; }
         final String prevMonthPrefix = String.format("%04d-%02d-", year, month);
 
-        // All developers in system (since Developer has no manager/team field)
+        // Report is calculated only for developers in the manager's team (subordinates)
+        final main.model.Manager mgr = (user instanceof main.model.Manager) ? (main.model.Manager) user : null;
         java.util.List<main.model.Developer> devs = new java.util.ArrayList<>();
-        for (User u : state.users.values()) { // or state.getUsers().values()
-            if (u.getRole() == Role.DEVELOPER) {
-                devs.add((main.model.Developer) u);
+        if (mgr != null) {
+            for (String devUsername : mgr.getSubordinates()) {
+                User u = state.getUser(devUsername);
+                if (u instanceof main.model.Developer) {
+                    devs.add((main.model.Developer) u);
+                }
             }
         }
-        devs.sort(java.util.Comparator.comparing(User::getUsername));
+        devs.sort(java.util.Comparator.comparing(main.model.User::getUsername));
 
         ObjectMapper mapper = new ObjectMapper();
         ObjectNode out = mapper.createObjectNode();
@@ -1641,27 +1652,31 @@ public final class CommandFacade {
 
             for (Ticket t : state.getTickets()) {
                 if (!d.getUsername().equals(t.getAssignedTo())) continue;
-                String resolvedAt = firstResolvedAt(t);
+                if (t.getStatus() != main.model.TicketStatus.CLOSED) continue;
+
+                // Only tickets CLOSED in the previous month (based on CLOSED timestamp)
+                int closedIdx = lastStatusChangeIndexTo(t, "CLOSED");
+                if (closedIdx < 0) continue;
+                String closedAt = t.getActions().get(closedIdx).getTimestamp();
+                if (closedAt == null || !closedAt.startsWith(prevMonthPrefix)) continue;
+
+                // Resolution time uses the RESOLVED moment for the same closure cycle
+                String resolvedAt = resolvedAtBeforeIndex(t, closedIdx);
                 if (resolvedAt.isEmpty()) continue;
-                if (!resolvedAt.startsWith(prevMonthPrefix)) continue;
-
-
-                // Only tickets closed in the previous month
-                if (!t.getSolvedAt().startsWith(prevMonthPrefix)) continue;
 
                 closedTickets++;
 
-                // resolution time: (solvedAt - assignedAt) in days + 1
-                int days = daysBetweenIso(t.getAssignedAt(), t.getSolvedAt()) + 1;
+                // resolution time: (resolvedAt - assignedAt) in days + 1
+                int days = daysBetweenIso(t.getAssignedAt(), resolvedAt) + 1;
                 sumResolutionDays += days;
             }
 
             double avg = (closedTickets == 0) ? 0.0 : (sumResolutionDays / closedTickets);
 
-            double score = (closedTickets == 0) ? 0.0 : computePerformanceScore(d.getSeniorityLevel(), closedTickets, avg);
-
-            // Round like ref
             double avgRounded = round2(avg);
+            // Ref computes score using the rounded averageResolutionTime (2 decimals)
+            double score = (closedTickets == 0) ? 0.0
+                    : computePerformanceScore(d.getSeniorityLevel(), closedTickets, avgRounded);
             double scoreRounded = round2(score);
 
             ObjectNode row = mapper.createObjectNode();
@@ -1696,7 +1711,7 @@ public final class CommandFacade {
         final double w;
         switch (level) {
             case JUNIOR: w = 3.16; break;
-            case MID:    w = 7.75; break;
+            case MID:    w = 7.76; break;
             case SENIOR: w = 11.75; break;
             default:     w = 3.16; break;
         }
@@ -1745,6 +1760,28 @@ public final class CommandFacade {
     }
     private static String firstResolvedAt(final Ticket t) {
         for (TicketAction a : t.getActions()) {
+            if (!"STATUS_CHANGED".equals(a.getAction())) continue;
+            if ("RESOLVED".equals(a.getTo())) {
+                return a.getTimestamp();
+            }
+        }
+        return "";
+    }
+
+    private static int lastStatusChangeIndexTo(final Ticket t, final String to) {
+        java.util.List<TicketAction> actions = t.getActions();
+        for (int i = actions.size() - 1; i >= 0; i--) {
+            TicketAction a = actions.get(i);
+            if (!"STATUS_CHANGED".equals(a.getAction())) continue;
+            if (to.equals(a.getTo())) return i;
+        }
+        return -1;
+    }
+
+    private static String resolvedAtBeforeIndex(final Ticket t, final int idxExclusive) {
+        java.util.List<TicketAction> actions = t.getActions();
+        for (int i = idxExclusive - 1; i >= 0; i--) {
+            TicketAction a = actions.get(i);
             if (!"STATUS_CHANGED".equals(a.getAction())) continue;
             if ("RESOLVED".equals(a.getTo())) {
                 return a.getTimestamp();
