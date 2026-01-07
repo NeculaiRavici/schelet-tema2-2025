@@ -1667,10 +1667,9 @@ public final class CommandFacade {
 
             double avg = (closedTickets == 0) ? 0.0 : (sumResolutionDays / closedTickets);
 
-            double score = (closedTickets == 0) ? 0.0 : computePerformanceScore(d.getSeniorityLevel(), closedTickets, avg);
-
-            // Round like ref
+            // Round average first, then use rounded value for score calculation
             double avgRounded = round2(avg);
+            double score = (closedTickets == 0) ? 0.0 : computePerformanceScore(d.getSeniorityLevel(), closedTickets, avgRounded);
             double scoreRounded = round2(score);
 
             ObjectNode row = mapper.createObjectNode();
