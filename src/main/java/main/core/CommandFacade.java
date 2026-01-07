@@ -673,6 +673,11 @@ public final class CommandFacade {
         t.setStatus(to);
         t.addAction(TicketAction.statusChanged(from.name(), to.name(), username, timestamp));
 
+        // Set solvedAt when the ticket becomes RESOLVED (for performance report calculations)
+        if (to == TicketStatus.RESOLVED) {
+            t.setSolvedAt(timestamp);
+        }
+
         return null;
     }
     private ObjectNode handleViewTicketHistory(final JsonNode cmdNode, final User user) {
@@ -1646,17 +1651,16 @@ public final class CommandFacade {
 
             for (Ticket t : state.getTickets()) {
                 if (!d.getUsername().equals(t.getAssignedTo())) continue;
-                String resolvedAt = firstResolvedAt(t);
-                if (resolvedAt.isEmpty()) continue;
-                if (!resolvedAt.startsWith(prevMonthPrefix)) continue;
 
-
-                // Only tickets closed in the previous month
-                if (!t.getSolvedAt().startsWith(prevMonthPrefix)) continue;
+                // Check if the ticket became CLOSED in the previous month
+                String ticketClosedAt = closedAt(t);
+                if (ticketClosedAt.isEmpty()) continue;
+                if (!ticketClosedAt.startsWith(prevMonthPrefix)) continue;
 
                 closedTickets++;
 
                 // resolution time: (solvedAt - assignedAt) in days + 1
+                // solvedAt is when it became RESOLVED
                 int days = daysBetweenIso(t.getAssignedAt(), t.getSolvedAt()) + 1;
                 sumResolutionDays += days;
             }
@@ -1752,6 +1756,16 @@ public final class CommandFacade {
         for (TicketAction a : t.getActions()) {
             if (!"STATUS_CHANGED".equals(a.getAction())) continue;
             if ("RESOLVED".equals(a.getTo())) {
+                return a.getTimestamp();
+            }
+        }
+        return "";
+    }
+
+    private static String closedAt(final Ticket t) {
+        for (TicketAction a : t.getActions()) {
+            if (!"STATUS_CHANGED".equals(a.getAction())) continue;
+            if ("CLOSED".equals(a.getTo())) {
                 return a.getTimestamp();
             }
         }
