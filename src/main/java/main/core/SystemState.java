@@ -135,8 +135,7 @@ public final class SystemState {
     }
 
     public boolean markOnce(final String key, final String dateIso) {
-        String prev = lastNotificationDate.get(key);
-        if (dateIso.equals(prev)) {
+        if (lastNotificationDate.containsKey(key)) {
             return false;
         }
         lastNotificationDate.put(key, dateIso);

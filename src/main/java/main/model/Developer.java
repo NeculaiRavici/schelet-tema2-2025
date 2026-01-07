@@ -1,6 +1,7 @@
 package main.model;
 
 import lombok.Getter;
+import lombok.Setter;
 
 public final class Developer extends User {
     private final ExpertiseArea expertiseArea;
@@ -11,6 +12,10 @@ public final class Developer extends User {
 
     @Getter
     private final String managerUsername;
+
+    @Getter
+    @Setter
+    private double performanceScore = 0.0;
 
     public Developer(final String username,
                      final String email,
